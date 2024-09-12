@@ -89,7 +89,7 @@ class SimMatch(AlgorithmBase):
         # simmatch specified arguments
         # adjust k 
         self.use_ema_teacher = True
-        if args.dataset in ['stl10', 'cifar10', 'cifar100', 'svhn', 'superks', 'tissuemnist', 'eurosat', 'superbks', 'esc50', 'gtzan', 'urbansound8k', 'aclImdb', 'ag_news', 'dbpedia']:
+        if args.dataset in ['olives','stl10', 'cifar10', 'cifar100', 'svhn', 'superks', 'tissuemnist', 'eurosat', 'superbks', 'esc50', 'gtzan', 'urbansound8k', 'aclImdb', 'ag_news', 'dbpedia']:
             self.use_ema_teacher = False
             self.ema_bank = 0.7
         args.K = args.lb_dest_len
@@ -109,7 +109,10 @@ class SimMatch(AlgorithmBase):
         # memory bank
         self.mem_bank = torch.randn(proj_size, K).cuda(self.gpu)
         self.mem_bank = F.normalize(self.mem_bank, dim=0)
-        self.labels_bank = torch.zeros(K, dtype=torch.long).cuda(self.gpu)
+        if self.args.loss == 'ce': # 单标签多分类
+            self.labels_bank = torch.zeros(K, dtype=torch.long).cuda(self.gpu)
+        elif self.args.loss == 'bce': # 多标签多分类
+            self.labels_bank = torch.zeros(K, self.num_classes, dtype=torch.float).cuda(self.gpu)
 
     def set_hooks(self):
         self.register_hook(
@@ -127,8 +130,7 @@ class SimMatch(AlgorithmBase):
         ema_model = self.net_builder(num_classes=self.num_classes)
         ema_model = SimMatch_Net(ema_model, proj_size=self.args.proj_size, epass=self.args.use_epass)
         ema_model.load_state_dict(self.model.state_dict())
-        return ema_model    
-
+        return ema_model
 
     @torch.no_grad()
     def update_bank(self, k, labels, index):
@@ -136,12 +138,16 @@ class SimMatch(AlgorithmBase):
             k = concat_all_gather(k)
             labels = concat_all_gather(labels)
             index = concat_all_gather(index)
+
         if self.use_ema_teacher:
             self.mem_bank[:, index] = k.t().detach()
         else:
-            self.mem_bank[:, index] = F.normalize(self.ema_bank * self.mem_bank[:, index] + (1 - self.ema_bank) * k.t().detach())
-        self.labels_bank[index] = labels.detach()
-    
+            self.mem_bank[:, index] = F.normalize(
+                self.ema_bank * self.mem_bank[:, index] + (1 - self.ema_bank) * k.t().detach())
+
+        # 确保数据类型匹配
+        self.labels_bank[index] = labels.detach().to(self.labels_bank.dtype)
+
     def train_step(self, idx_lb, x_lb, y_lb, x_ulb_w, x_ulb_s):
         num_lb = y_lb.shape[0]
         num_ulb = len(x_ulb_w['input_ids']) if isinstance(x_ulb_w, dict) else x_ulb_w.shape[0]
@@ -183,39 +189,63 @@ class SimMatch(AlgorithmBase):
                 # ema teacher model
                 if self.use_ema_teacher:
                     ema_feats_x_lb = self.model(x_lb)['feat']
-                ema_probs_x_ulb_w = F.softmax(ema_logits_x_ulb_w, dim=-1)
+                if self.args.loss == 'ce': # 单标签多分类
+                    ema_probs_x_ulb_w = F.softmax(ema_logits_x_ulb_w, dim=-1)
+                elif self.args.loss == 'bce': # 多标签多分类
+                    ema_probs_x_ulb_w = torch.sigmoid(ema_logits_x_ulb_w)
                 ema_probs_x_ulb_w = self.call_hook("dist_align", "DistAlignHook", probs_x_ulb=ema_probs_x_ulb_w.detach())
             self.ema.restore()
             feat_dict = {'x_lb': ema_feats_x_lb, 'x_ulb_w':ema_feats_x_ulb_w, 'x_ulb_s':feats_x_ulb_s}
 
             with torch.no_grad():
                 teacher_logits = ema_feats_x_ulb_w @ bank
-                teacher_prob_orig = F.softmax(teacher_logits / self.T, dim=1)
-                factor = ema_probs_x_ulb_w.gather(1, self.labels_bank.expand([num_ulb, -1]))    
-                teacher_prob = teacher_prob_orig * factor
-                teacher_prob /= torch.sum(teacher_prob, dim=1, keepdim=True)
+
+                if self.args.loss == 'ce':  # 单标签多分类
+                    teacher_prob_orig = F.softmax(teacher_logits / self.T, dim=1)
+                    factor = ema_probs_x_ulb_w.gather(1, self.labels_bank.expand(
+                        [num_ulb, -1]))  # self.labels_bank shape: [K, num_classes]
+                    teacher_prob = teacher_prob_orig * factor
+                    teacher_prob /= torch.sum(teacher_prob, dim=1, keepdim=True)
+
+                elif self.args.loss == 'bce':  # 多标签多分类
+                    teacher_prob_orig = torch.sigmoid(
+                        teacher_logits / self.T)  # self.labels_bank shape: [K, num_classes]
+                    factor = ema_probs_x_ulb_w @ self.labels_bank.T  # [num_ulb, num_classes]
+                    teacher_prob = teacher_prob_orig * factor
+                    teacher_prob /= torch.sum(teacher_prob, dim=1, keepdim=True)
 
                 if self.smoothing_alpha < 1:
                     bs = teacher_prob_orig.size(0)
                     aggregated_prob = torch.zeros([bs, self.num_classes], device=teacher_prob_orig.device)
-                    aggregated_prob = aggregated_prob.scatter_add(1, self.labels_bank.expand([bs,-1]) , teacher_prob_orig)
-                    probs_x_ulb_w = ema_probs_x_ulb_w * self.smoothing_alpha + aggregated_prob * (1- self.smoothing_alpha)
+
+                    if self.args.loss == 'ce':
+                        expanded_labels_bank = self.labels_bank.expand([bs, -1])
+                        aggregated_prob = aggregated_prob.scatter_add(1, expanded_labels_bank, teacher_prob_orig)
+                    elif self.args.loss == 'bce':
+                        for i in range(bs):
+                            aggregated_prob[i] = teacher_prob_orig[
+                                                     i] @ self.labels_bank  # 按照 [K, num_classes] 大小的 self.labels_bank 进行操作
+
+                    probs_x_ulb_w = ema_probs_x_ulb_w * self.smoothing_alpha + aggregated_prob * (
+                                1 - self.smoothing_alpha)
                 else:
                     probs_x_ulb_w = ema_probs_x_ulb_w
 
             student_logits = feats_x_ulb_s @ bank
             student_prob = F.softmax(student_logits / self.T, dim=1)
             in_loss = torch.sum(-teacher_prob.detach() * torch.log(student_prob), dim=1).mean()
+
             if self.epoch == 0:
                 in_loss *= 0.0
                 probs_x_ulb_w = ema_probs_x_ulb_w
 
+            multi_label = True if self.args.loss == 'bce' else False
             # compute mask
-            mask = self.call_hook("masking", "MaskingHook", logits_x_ulb=probs_x_ulb_w, softmax_x_ulb=False)
+            mask = self.call_hook("masking", "MaskingHook", logits_x_ulb=probs_x_ulb_w, softmax_x_ulb=False,multi_label=multi_label)
 
             unsup_loss = self.consistency_loss(logits_x_ulb_s,
                                                probs_x_ulb_w,
-                                               'ce',
+                                               'sim_un',
                                                mask=mask)
 
             total_loss = sup_loss + self.lambda_u * unsup_loss + self.lambda_in * in_loss

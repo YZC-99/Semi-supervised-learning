@@ -20,7 +20,9 @@ class PseudoLabelingHook(Hook):
                         use_hard_label=True, 
                         T=1.0,
                         softmax=True, # whether to compute softmax for logits, input must be logits
-                        label_smoothing=0.0):
+                        label_smoothing=0.0,
+                        multi_label=True
+                        ):
         
         """
         generate pseudo-labels from logits/probs
@@ -35,19 +37,31 @@ class PseudoLabelingHook(Hook):
         """
 
         logits = logits.detach()
-        if use_hard_label:
-            # return hard label directly
-            pseudo_label = torch.argmax(logits, dim=-1)
-            if label_smoothing:
-                pseudo_label = smooth_targets(logits, pseudo_label, label_smoothing)
-            return pseudo_label
-        
-        # return soft label
-        if softmax:
-            # pseudo_label = torch.softmax(logits / T, dim=-1)
-            pseudo_label = algorithm.compute_prob(logits / T)
+        if multi_label:
+            # multi-label classification
+            if use_hard_label:
+                # return hard label directly
+                # pseudo_label = torch.sigmoid(logits)
+                pseudo_label = torch.where(logits > 0.5, torch.ones_like(logits), torch.zeros_like(logits))
+                return pseudo_label
+            else:
+                # return soft label
+                # pseudo_label = torch.sigmoid(logits)
+                return logits
         else:
-            # inputs logits converted to probabilities already
-            pseudo_label = logits
-        return pseudo_label
+            if use_hard_label:
+                # return hard label directly
+                pseudo_label = torch.argmax(logits, dim=-1)
+                if label_smoothing:
+                    pseudo_label = smooth_targets(logits, pseudo_label, label_smoothing)
+                return pseudo_label
+
+            # return soft label
+            if softmax:
+                # pseudo_label = torch.softmax(logits / T, dim=-1)
+                pseudo_label = algorithm.compute_prob(logits / T)
+            else:
+                # inputs logits converted to probabilities already
+                pseudo_label = logits
+            return pseudo_label
         

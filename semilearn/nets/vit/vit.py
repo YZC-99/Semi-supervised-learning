@@ -11,6 +11,7 @@ import torch.utils.checkpoint
 
 from timm.models.layers import DropPath, trunc_normal_
 from timm.models.layers.helpers import to_2tuple
+import timm.models.vision_transformer as timm_vit
 
 from semilearn.nets.utils import load_checkpoint
 
@@ -286,6 +287,7 @@ def vit_base_patch16_224(pretrained=False, pretrained_path=None, **kwargs):
     """
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, drop_path_rate=0.2, **kwargs)
     model = VisionTransformer(**model_kwargs)
-    if pretrained:
-        model = load_checkpoint(model, pretrained_path)   
+    # if pretrained:
+    #     model = load_checkpoint(model, pretrained_path)
+    # return timm_vit.vit_small_patch16_224(pretrained=pretrained)
     return model

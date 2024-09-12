@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-
+import torch.nn as nn
 import os
 import math
 import logging
@@ -10,6 +10,7 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader
 from semilearn.datasets import get_collactor, name2sampler
 from semilearn.nets.utils import param_groups_layer_decay, param_groups_weight_decay
+import timm
 
 def get_net_builder(net_name, from_name: bool):
     """
@@ -21,17 +22,26 @@ def get_net_builder(net_name, from_name: bool):
         from_name: If True, net_buidler takes models in torch.vision models. Then, net_conf is ignored.
     """
     if from_name:
-        import torchvision.models as nets
-        model_name_list = sorted(name for name in nets.__dict__
-                                 if name.islower() and not name.startswith("__")
-                                 and callable(nets.__dict__[name]))
+        # import torchvision.models as nets
+        # model_name_list = sorted(name for name in nets.__dict__
+        #                          if name.islower() and not name.startswith("__")
+        #                          and callable(nets.__dict__[name]))
+        #
+        # if net_name not in model_name_list:
+        #     assert Exception(f"[!] Networks\' Name is wrong, check net config, \
+        #                        expected: {model_name_list}  \
+        #                        received: {net_name}")
+        # else:
+        #     return nets.__dict__[net_name]
 
+        model_name_list = timm.list_models()
         if net_name not in model_name_list:
             assert Exception(f"[!] Networks\' Name is wrong, check net config, \
                                expected: {model_name_list}  \
                                received: {net_name}")
         else:
-            return nets.__dict__[net_name]
+            return net_name
+
     else:
         # TODO: fix bug here
         import semilearn.nets as nets
@@ -46,6 +56,8 @@ def get_logger(name, save_path=None, level='INFO'):
     """
     logger = logging.getLogger(name)
     logging.basicConfig(format='[%(asctime)s %(levelname)s] %(message)s', level=getattr(logging, level))
+
+
 
     if not save_path is None:
         os.makedirs(save_path, exist_ok=True)
@@ -70,9 +82,10 @@ def get_dataset(args, algorithm, dataset, num_labels, num_classes, data_dir='./d
         data_dir: data folder
         include_lb_to_ulb: flag of including labeled data into unlabeled data
     """
-    from semilearn.datasets import get_eurosat, get_medmnist, get_semi_aves, get_cifar, get_svhn, get_stl10, get_imagenet, get_json_dset, get_pkl_dset
-
-    if dataset == "eurosat":
+    from semilearn.datasets import get_eurosat, get_medmnist, get_semi_aves, get_cifar, get_svhn, get_stl10, get_imagenet, get_json_dset, get_pkl_dset,get_olives
+    if dataset == 'olives':
+        lb_dset, ulb_dset, eval_dset,test_dset = get_olives(args, algorithm, num_labels, num_classes,include_lb_to_ulb=include_lb_to_ulb)
+    elif dataset == "eurosat":
         lb_dset, ulb_dset, eval_dset = get_eurosat(args, algorithm, dataset, num_labels, num_classes, data_dir=data_dir, include_lb_to_ulb=include_lb_to_ulb)
         test_dset = None
     elif dataset in ["tissuemnist"]:
@@ -113,7 +126,7 @@ def get_data_loader(args,
                     batch_size=None,
                     shuffle=False,
                     num_workers=4,
-                    pin_memory=False,
+                    pin_memory=True,
                     data_sampler='RandomSampler',
                     num_epochs=None,
                     num_iters=None,
@@ -210,7 +223,8 @@ def get_optimizer(net, optim_name='SGD', lr=0.1, momentum=0.9, weight_decay=0, l
                                     nesterov=nesterov)
     elif optim_name == 'AdamW':
         optimizer = torch.optim.AdamW(per_param_args, lr=lr, weight_decay=weight_decay)
-
+    elif optim_name == 'Adam':
+        optimizer = torch.optim.Adam(per_param_args, lr=lr, weight_decay=weight_decay)
     return optimizer
 
 

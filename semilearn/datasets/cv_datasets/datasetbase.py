@@ -30,7 +30,8 @@ class BasicDataset(Dataset):
                  medium_transform=None,
                  strong_transform=None,
                  onehot=False,
-                 *args, 
+                 is_test=False,
+                 *args,
                  **kwargs):
         """
         Args
@@ -61,6 +62,8 @@ class BasicDataset(Dataset):
         if self.medium_transform is None:
             if self.is_ulb:
                 assert self.alg not in ['sequencematch'], f"alg {self.alg} requires medium augmentation"
+
+        self.is_test = is_test
     
     def __sample__(self, idx):
         """ dataset specific sample function """
@@ -74,15 +77,15 @@ class BasicDataset(Dataset):
         # set augmented images
         img = self.data[idx]
         return img, target
-
-    def __getitem__(self, idx):
+    def getitem_train_val(self, idx):
         """
         If strong augmentation is not used,
             return weak_augment_image, target
         else:
             return weak_augment_image, strong_augment_image, target
         """
-        img, target = self.__sample__(idx)
+
+        img, target,path = self.__sample__(idx)
 
         if self.transform is None:
             return  {'x_lb':  transforms.ToTensor()(img), 'y_lb': target}
@@ -91,18 +94,18 @@ class BasicDataset(Dataset):
                 img = Image.fromarray(img)
             img_w = self.transform(img)
             if not self.is_ulb:
-                return {'idx_lb': idx, 'x_lb': img_w, 'y_lb': target} 
+                return {'idx_lb': idx, 'x_lb': img_w, 'y_lb': target}
             else:
                 if self.alg == 'fullysupervised' or self.alg == 'supervised':
                     return {'idx_ulb': idx}
                 elif self.alg == 'pseudolabel' or self.alg == 'vat':
-                    return {'idx_ulb': idx, 'x_ulb_w':img_w} 
+                    return {'idx_ulb': idx, 'x_ulb_w':img_w}
                 elif self.alg == 'pimodel' or self.alg == 'meanteacher' or self.alg == 'mixmatch':
                     # NOTE x_ulb_s here is weak augmentation
                     return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s': self.transform(img)}
                 # elif self.alg == 'sequencematch' or self.alg == 'somematch':
                 elif self.alg == 'sequencematch':
-                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_m': self.medium_transform(img), 'x_ulb_s': self.strong_transform(img)} 
+                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_m': self.medium_transform(img), 'x_ulb_s': self.strong_transform(img)}
                 elif self.alg == 'remixmatch':
                     rotate_v_list = [0, 90, 180, 270]
                     rotate_v1 = np.random.choice(rotate_v_list, 1).item()
@@ -111,9 +114,55 @@ class BasicDataset(Dataset):
                     img_s2 = self.strong_transform(img)
                     return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s_0': img_s1, 'x_ulb_s_1':img_s2, 'x_ulb_s_0_rot':img_s1_rot, 'rot_v':rotate_v_list.index(rotate_v1)}
                 elif self.alg == 'comatch':
-                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s_0': self.strong_transform(img), 'x_ulb_s_1':self.strong_transform(img)} 
+                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s_0': self.strong_transform(img), 'x_ulb_s_1':self.strong_transform(img)}
                 else:
-                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s': self.strong_transform(img)} 
+                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s': self.strong_transform(img)}
+
+    def getitem_test(self, idx):
+        """
+        If strong augmentation is not used,
+            return weak_augment_image, target
+        else:
+            return weak_augment_image, strong_augment_image, target
+        """
+        img, target,path = self.__sample__(idx)
+
+        if self.transform is None:
+            return  {'x_lb':  transforms.ToTensor()(img), 'y_lb': target}
+        else:
+            if isinstance(img, np.ndarray):
+                img = Image.fromarray(img)
+            img_w = self.transform(img)
+            if not self.is_ulb:
+                return {'idx_lb': idx, 'x_lb': img_w, 'y_lb': target,'image_path':path}
+            else:
+                if self.alg == 'fullysupervised' or self.alg == 'supervised':
+                    return {'idx_ulb': idx,'image_path':path}
+                elif self.alg == 'pseudolabel' or self.alg == 'vat':
+                    return {'idx_ulb': idx, 'x_ulb_w':img_w,'image_path':path}
+                elif self.alg == 'pimodel' or self.alg == 'meanteacher' or self.alg == 'mixmatch':
+                    # NOTE x_ulb_s here is weak augmentation
+                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s': self.transform(img),'image_path':path}
+                # elif self.alg == 'sequencematch' or self.alg == 'somematch':
+                elif self.alg == 'sequencematch':
+                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_m': self.medium_transform(img), 'x_ulb_s': self.strong_transform(img),'image_path':path}
+                elif self.alg == 'remixmatch':
+                    rotate_v_list = [0, 90, 180, 270]
+                    rotate_v1 = np.random.choice(rotate_v_list, 1).item()
+                    img_s1 = self.strong_transform(img)
+                    img_s1_rot = torchvision.transforms.functional.rotate(img_s1, rotate_v1)
+                    img_s2 = self.strong_transform(img)
+                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s_0': img_s1, 'x_ulb_s_1':img_s2, 'x_ulb_s_0_rot':img_s1_rot, 'rot_v':rotate_v_list.index(rotate_v1),'image_path':path}
+                elif self.alg == 'comatch':
+                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s_0': self.strong_transform(img), 'x_ulb_s_1':self.strong_transform(img),'image_path':path}
+                else:
+                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s': self.strong_transform(img),'image_path':path}
+
+    def __getitem__(self, idx):
+        if self.is_test:
+            return self.getitem_test(idx)
+        else:
+            return self.getitem_train_val(idx)
 
 
     def __len__(self):

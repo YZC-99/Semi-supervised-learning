@@ -37,6 +37,7 @@ def get_config(config):
     parser.add_argument('--num_log_iter', type=int, default=5,
                         help='logging frequencu')
     parser.add_argument('-nl', '--num_labels', type=int, default=400)
+    parser.add_argument('--exterrio',  type=float, default=0.0)
     parser.add_argument('-bsz', '--batch_size', type=int, default=8)
     parser.add_argument('--uratio', type=int, default=1,
                         help='the ratio of unlabeled data to labeld data in each mini-batch')
@@ -71,6 +72,7 @@ def get_config(config):
     parser.add_argument('--use_cat', type=str2bool, default=True, help='use cat operation in algorithms')
     parser.add_argument('--use_amp', type=str2bool, default=False, help='use mixed precision training or not')
     parser.add_argument('--clip_grad', type=float, default=0)
+    parser.add_argument('--loss', type=str, default='ce', help='loss function')
 
     ## imbalance algorithm setting
     parser.add_argument('-imb_alg', '--imb_algorithm', type=str, default=None, help='imbalance ssl algorithm')
@@ -84,10 +86,11 @@ def get_config(config):
     parser.add_argument('-ds', '--dataset', type=str, default='cifar10')
     parser.add_argument('-nc', '--num_classes', type=int, default=10)
     parser.add_argument('--train_sampler', type=str, default='RandomSampler')
-    parser.add_argument('--num_workers', type=int, default=1)
+    parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--include_lb_to_ulb', type=str2bool, default='True', help='flag of including labeled data into unlabeled data, default to True')
 
     ## imbalanced setting arguments
+    parser.add_argument('--use_epass', type=bool, default=True, help="SimMatch")
     parser.add_argument('--lb_imb_ratio', type=int, default=1, help="imbalance ratio of labeled data, default to 1")
     parser.add_argument('--ulb_imb_ratio', type=int, default=1, help="imbalance ratio of unlabeled data, default to 1")
     parser.add_argument('--ulb_num_labels', type=int, default=None, help="number of labels for unlabeled data, used for determining the maximum number of labels in imbalanced setting")
@@ -116,7 +119,7 @@ def get_config(config):
                         help='url used to set up distributed training')
     parser.add_argument('--dist-backend', default='nccl', type=str,
                         help='distributed backend')
-    parser.add_argument('--seed', default=1, type=int,
+    parser.add_argument('--seed', default=42, type=int,
                         help='seed for initializing training. ')
     parser.add_argument('--gpu', default=None, type=int,
                         help='GPU id to use.')

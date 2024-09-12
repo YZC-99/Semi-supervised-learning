@@ -207,13 +207,14 @@ class CoMatch(AlgorithmBase):
                 mask = self.call_hook("masking", "MaskingHook", logits_x_ulb=probs, softmax_x_ulb=False)    
                 
                 feats_w = torch.cat([feats_x_ulb_w, feats_x_lb],dim=0)   
-                probs_w = torch.cat([probs_orig, F.one_hot(y_lb, num_classes=self.num_classes)],dim=0)
+                # probs_w = torch.cat([probs_orig, F.one_hot(y_lb, num_classes=self.num_classes)],dim=0)
+                probs_w = torch.cat([probs_orig, y_lb],dim=0)
 
                 self.update_bank(feats_w, probs_w)
 
             unsup_loss = self.consistency_loss(logits_x_ulb_s_0,
                                           probs,
-                                          'ce',
+                                          'bce',
                                           mask=mask)
 
             # pseudo-label graph with self-loop

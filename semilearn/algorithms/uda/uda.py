@@ -97,7 +97,7 @@ class UDA(AlgorithmBase):
 
             unsup_loss = self.consistency_loss(logits_x_ulb_s,
                                                pseudo_label, 
-                                               'ce',
+                                               'bce',
                                                mask=mask)
 
             total_loss = sup_loss + self.lambda_u * unsup_loss

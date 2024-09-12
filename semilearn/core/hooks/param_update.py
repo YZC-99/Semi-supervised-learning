@@ -36,6 +36,7 @@ class ParamUpdateHook(Hook):
             algorithm.optimizer.step()
 
         if algorithm.scheduler is not None:
+            # algorithm.scheduler.step(algorithm.epoch)
             algorithm.scheduler.step()
         algorithm.model.zero_grad()
 

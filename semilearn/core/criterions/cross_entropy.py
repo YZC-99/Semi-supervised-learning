@@ -8,6 +8,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 
+
 def ce_loss(logits, targets, reduction='none'):
     """
     cross entropy loss in pytorch.

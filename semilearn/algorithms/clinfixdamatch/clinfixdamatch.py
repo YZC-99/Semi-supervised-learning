@@ -1,15 +1,15 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-
+import numpy as np
 import torch
 from semilearn.core.algorithmbase import AlgorithmBase
 from semilearn.core.utils import ALGORITHMS
-from semilearn.algorithms.hooks import PseudoLabelingHook, FixedThresholdingHook
+from semilearn.algorithms.hooks import PseudoLabelingHook, FixedThresholdingHook,DistAlignEMAHook
 from semilearn.algorithms.utils import SSL_Argument, str2bool
 
 
-@ALGORITHMS.register('fixmatch')
-class FixMatch(AlgorithmBase):
+@ALGORITHMS.register('fixdamatch')
+class ClinFixDaMatch(AlgorithmBase):
 
     """
         FixMatch algorithm (https://arxiv.org/abs/2001.07685).
@@ -41,11 +41,21 @@ class FixMatch(AlgorithmBase):
         self.use_hard_label = hard_label
     
     def set_hooks(self):
+        lb_class_dist = [0 for _ in range(self.num_classes)]
+        print(self.dataset_dict['train_lb'].targets.shape) # (370,16)
+        # 计算总和，得到(n,16)
+        target_sum = self.dataset_dict['train_lb'].targets.sum(axis=0)
+        lb_class_dist = target_sum
+        lb_class_dist = np.array(lb_class_dist)
+        lb_class_dist = lb_class_dist / lb_class_dist.sum()
+        self.register_hook(
+            DistAlignEMAHook(num_classes=self.num_classes, p_target_type='gt', p_target=lb_class_dist),
+            "DistAlignHook")
         self.register_hook(PseudoLabelingHook(), "PseudoLabelingHook")
         self.register_hook(FixedThresholdingHook(), "MaskingHook")
         super().set_hooks()
 
-    def train_step(self, x_lb, y_lb, x_ulb_w, x_ulb_s):
+    def train_step(self, x_lb, y_lb, x_ulb_w, x_ulb_s,clinical):
         num_lb = y_lb.shape[0]
 
         # inference and calculate sup/unsup losses
@@ -77,8 +87,8 @@ class FixMatch(AlgorithmBase):
             
             # if distribution alignment hook is registered, call it 
             # this is implemented for imbalanced algorithm - CReST
-            if self.registered_hook("DistAlignHook"):
-                probs_x_ulb_w = self.call_hook("dist_align", "DistAlignHook", probs_x_ulb=probs_x_ulb_w.detach())
+
+            probs_x_ulb_w = self.call_hook("dist_align", "DistAlignHook", probs_x_ulb=probs_x_ulb_w)
 
             multi_label = True if self.args.loss == 'bce' else False
 

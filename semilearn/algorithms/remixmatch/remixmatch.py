@@ -89,6 +89,7 @@ class ReMixMatch(AlgorithmBase):
 
     def set_hooks(self):
         lb_class_dist = [0 for _ in range(self.num_classes)]
+        print(self.dataset_dict['train_lb'].targets.shape)
         for c in  self.dataset_dict['train_lb'].targets:
             lb_class_dist[c] += 1
         lb_class_dist = np.array(lb_class_dist)

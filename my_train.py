@@ -366,6 +366,7 @@ def main_worker(gpu, ngpus_per_node, args):
         model = get_imb_algorithm(args, _net_builder, tb_log, logger)
     else:
         model = get_algorithm(args, _net_builder, tb_log, logger)
+
     logger.info(f"Number of Trainable Params: {count_parameters(model.model)}")
 
     # SET Devices for (Distributed) DataParallel

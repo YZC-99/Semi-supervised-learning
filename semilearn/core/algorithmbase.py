@@ -7,7 +7,7 @@ import numpy as np
 from inspect import signature
 from collections import OrderedDict
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, top_k_accuracy_score
-
+from timm.scheduler.cosine_lr import CosineLRScheduler
 import torch
 import torch.nn.functional as F
 from torch.cuda.amp import autocast, GradScaler
@@ -15,7 +15,7 @@ from torch.cuda.amp import autocast, GradScaler
 from semilearn.core.hooks import Hook, get_priority, CheckpointHook, TimerHook, LoggingHook, DistSamplerSeedHook, ParamUpdateHook, EvaluationHook, EMAHook, WANDBHook, AimHook
 from semilearn.core.utils import get_dataset, get_data_loader, get_optimizer, get_cosine_schedule_with_warmup, Bn_Controller
 from semilearn.core.criterions import CELoss, ConsistencyLoss
-
+from torch.nn.functional import binary_cross_entropy_with_logits
 
 class AlgorithmBase:
     """
@@ -45,6 +45,7 @@ class AlgorithmBase:
         self.num_classes = args.num_classes
         self.ema_m = args.ema_m
         self.epochs = args.epoch
+        self.now_epoch=0
         self.num_train_iter = args.num_train_iter
         self.num_eval_iter = args.num_eval_iter
         self.num_log_iter = args.num_log_iter
@@ -73,6 +74,7 @@ class AlgorithmBase:
         self.it = 0
         self.start_epoch = 0
         self.best_eval_acc, self.best_it = 0.0, 0
+        self.best_eval_mAP = 0.0
         self.bn_controller = Bn_Controller()
         self.net_builder = net_builder
         self.ema = None
@@ -91,7 +93,10 @@ class AlgorithmBase:
         self.optimizer, self.scheduler = self.set_optimizer()
 
         # build supervised loss and unsupervised loss
-        self.ce_loss = CELoss()
+        if args.loss == 'ce':
+            self.ce_loss = CELoss()
+        elif args.loss == 'bce':
+            self.ce_loss = binary_cross_entropy_with_logits
         self.consistency_loss = ConsistencyLoss()
 
         # other arguments specific to the algorithm
@@ -132,35 +137,36 @@ class AlgorithmBase:
         """
         if self.dataset_dict is None:
             return
-            
+
         self.print_fn("Create train and test data loaders")
         loader_dict = {}
         loader_dict['train_lb'] = get_data_loader(self.args,
                                                   self.dataset_dict['train_lb'],
                                                   self.args.batch_size,
-                                                  data_sampler=self.args.train_sampler,
+                                                  data_sampler=None,
                                                   num_iters=self.num_train_iter,
                                                   num_epochs=self.epochs,
                                                   num_workers=self.args.num_workers,
                                                   distributed=self.distributed)
+        loader_dict['train_ulb'] = loader_dict['train_lb']
+        loader_dict['eval'] = loader_dict['train_lb']
+        # loader_dict['train_ulb'] = get_data_loader(self.args,
+        #                                            self.dataset_dict['train_ulb'],
+        #                                            self.args.batch_size * self.args.uratio,
+        #                                            data_sampler=self.args.train_sampler,
+        #                                            num_iters=self.num_train_iter,
+        #                                            num_epochs=self.epochs,
+        #                                            num_workers=2 * self.args.num_workers,
+        #                                            distributed=self.distributed)
+        #
+        # loader_dict['eval'] = get_data_loader(self.args,
+        #                                       self.dataset_dict['eval'],
+        #                                       self.args.eval_batch_size,
+        #                                       # make sure data_sampler is None for evaluation
+        #                                       data_sampler=None,
+        #                                       num_workers=self.args.num_workers,
+        #                                       drop_last=False)
 
-        loader_dict['train_ulb'] = get_data_loader(self.args,
-                                                   self.dataset_dict['train_ulb'],
-                                                   self.args.batch_size * self.args.uratio,
-                                                   data_sampler=self.args.train_sampler,
-                                                   num_iters=self.num_train_iter,
-                                                   num_epochs=self.epochs,
-                                                   num_workers=2 * self.args.num_workers,
-                                                   distributed=self.distributed)
-
-        loader_dict['eval'] = get_data_loader(self.args,
-                                              self.dataset_dict['eval'],
-                                              self.args.eval_batch_size,
-                                              # make sure data_sampler is None for evaluation
-                                              data_sampler=None,
-                                              num_workers=self.args.num_workers,
-                                              drop_last=False)
-        
         if self.dataset_dict['test'] is not None:
             loader_dict['test'] =  get_data_loader(self.args,
                                                    self.dataset_dict['test'],
@@ -181,13 +187,15 @@ class AlgorithmBase:
         scheduler = get_cosine_schedule_with_warmup(optimizer,
                                                     self.num_train_iter,
                                                     num_warmup_steps=self.args.num_warmup_iter)
+        # scheduler = get_cosine_schedule_with_warmup(optimizer,
+        #                                             self.epochs,)
+        # scheduler = CosineLRScheduler(optimizer, t_initial=self.epochs, warmup_lr_init=1e-7)
         return optimizer, scheduler
 
     def set_model(self):
-        """
-        initialize model
-        """
-        model = self.net_builder(num_classes=self.num_classes, pretrained=self.args.use_pretrain, pretrained_path=self.args.pretrain_path)
+
+
+        model = self.net_builder(num_classes=self.num_classes, pretrained=self.args.use_pretrain)
         return model
 
     def set_ema_model(self):
@@ -268,9 +276,12 @@ class AlgorithmBase:
         return log_dict
 
     def compute_prob(self, logits):
-        return torch.softmax(logits, dim=-1)
+        if self.args.loss == 'ce':
+            return torch.softmax(logits, dim=-1)
+        elif self.args.loss == 'bce':
+            return torch.sigmoid(logits)
 
-    def train_step(self, idx_lb, x_lb, y_lb, idx_ulb, x_ulb_w, x_ulb_s):
+    def train_step(self, idx_lb, x_lb, y_lb, idx_ulb, x_ulb_w, x_ulb_s,clinical):
         """
         train_step specific to each algorithm
         """
@@ -303,7 +314,6 @@ class AlgorithmBase:
                 # prevent the training iterations exceed args.num_train_iter
                 if self.it >= self.num_train_iter:
                     break
-
                 self.call_hook("before_train_step")
                 self.out_dict, self.log_dict = self.train_step(**self.process_batch(**data_lb, **data_ulb))
                 self.call_hook("after_train_step")
@@ -324,15 +334,21 @@ class AlgorithmBase:
         eval_loader = self.loader_dict[eval_dest]
         total_loss = 0.0
         total_num = 0.0
+        all_idx = []
+        all_image_path = []
         y_true = []
         y_pred = []
         y_probs = []
         y_logits = []
         with torch.no_grad():
             for data in eval_loader:
+                all_idx.append(data['idx_lb'])
                 x = data['x_lb']
                 y = data['y_lb']
-                
+                if eval_dest == 'test':
+                    image_path = data['image_path']
+                    all_image_path.append(image_path)
+
                 if isinstance(x, dict):
                     x = {k: v.cuda(self.gpu) for k, v in x.items()}
                 else:
@@ -343,32 +359,131 @@ class AlgorithmBase:
                 total_num += num_batch
 
                 logits = self.model(x)[out_key]
-                
-                loss = F.cross_entropy(logits, y, reduction='mean', ignore_index=-1)
-                y_true.extend(y.cpu().tolist())
-                y_pred.extend(torch.max(logits, dim=-1)[1].cpu().tolist())
-                y_logits.append(logits.cpu().numpy())
-                y_probs.extend(torch.softmax(logits, dim=-1).cpu().tolist())
-                total_loss += loss.item() * num_batch
-        y_true = np.array(y_true)
-        y_pred = np.array(y_pred)
-        y_logits = np.concatenate(y_logits)
-        top1 = accuracy_score(y_true, y_pred)
-        top5 = top_k_accuracy_score(y_true, y_probs, k=5)
-        balanced_top1 = balanced_accuracy_score(y_true, y_pred)
-        precision = precision_score(y_true, y_pred, average='macro')
-        recall = recall_score(y_true, y_pred, average='macro')
-        F1 = f1_score(y_true, y_pred, average='macro')
+                if self.args.loss == 'ce':
+                    loss = F.cross_entropy(logits, y, reduction='mean', ignore_index=-1)
+                    y_true.extend(y.cpu().tolist())
+                    y_pred.extend(torch.max(logits, dim=-1)[1].cpu().tolist())
+                    y_logits.append(logits.cpu().numpy())
+                    y_probs.extend(torch.softmax(logits, dim=-1).cpu().tolist())
+                    total_loss += loss.item() * num_batch
+                elif self.args.loss == 'bce':
+                    loss = F.binary_cross_entropy_with_logits(logits, y)
+                    y_logits.append(torch.sigmoid(logits).float())
+                    y_true.append(y)
+                    # y_true.extend(y.cpu().tolist())
+                    # y_pred.extend((torch.sigmoid(logits) > 0.5).cpu().int().tolist())
+                    # y_logits.append(torch.sigmoid(logits))
+                    # y_probs.extend(torch.sigmoid(logits).cpu().tolist())
+                    total_loss += loss.item() * num_batch
+        if self.args.loss == 'ce':
+            y_true = np.array(y_true)
+            y_pred = np.array(y_pred)
+            y_logits = np.concatenate(y_logits)
+            top1 = accuracy_score(y_true, y_pred)
+            top5 = top_k_accuracy_score(y_true, y_probs, k=5)
+            balanced_top1 = balanced_accuracy_score(y_true, y_pred)
+            precision = precision_score(y_true, y_pred, average='macro')
+            recall = recall_score(y_true, y_pred, average='macro')
+            F1 = f1_score(y_true, y_pred, average='macro')
 
-        cf_mat = confusion_matrix(y_true, y_pred, normalize='true')
-        self.print_fn('confusion matrix:\n' + np.array_str(cf_mat))
+            cf_mat = confusion_matrix(y_true, y_pred, normalize='true')
+            self.print_fn('confusion matrix:\n' + np.array_str(cf_mat))
+            eval_dict = {eval_dest+'/loss': total_loss / total_num, eval_dest+'/top-1-acc': top1, eval_dest+'/top-5-acc': top5,
+                         eval_dest+'/balanced_acc': balanced_top1, eval_dest+'/precision': precision, eval_dest+'/recall': recall, eval_dest+'/F1': F1}
+        elif self.args.loss =='bce':
+            from semilearn.lighting.evaluator import Evaluator
+            evaluator = Evaluator(self.num_classes)
+            result_dict = evaluator.compute(y_logits, y_true)
+            eval_dict = {eval_dest + '/loss': total_loss / total_num, eval_dest + '/mAP': result_dict['mAP'],
+                         eval_dest + '/CF1': result_dict['CF1'],
+                         eval_dest + '/OF1': result_dict['OF1'],
+                         # "all_result":result_dict
+                         }
+
         self.ema.restore()
         self.model.train()
 
-        eval_dict = {eval_dest+'/loss': total_loss / total_num, eval_dest+'/top-1-acc': top1, eval_dest+'/top-5-acc': top5, 
-                     eval_dest+'/balanced_acc': balanced_top1, eval_dest+'/precision': precision, eval_dest+'/recall': recall, eval_dest+'/F1': F1}
         if return_logits:
             eval_dict[eval_dest+'/logits'] = y_logits
+        if eval_dest == 'test':
+            logits_dict = {}
+            for i, minibatch in enumerate(all_image_path):
+                for j in range(len(minibatch)):
+                    logits_dict[minibatch[j]] = y_logits[i][j].tolist()
+            eval_dict[eval_dest+'/logits_dict'] = logits_dict
+        return eval_dict
+
+    def test(self, eval_dest='test', out_key='logits', return_logits=False):
+
+        self.model.eval().to(self.gpu)
+
+        eval_loader = self.loader_dict[eval_dest]
+        total_num = 0.0
+        all_idx = []
+        all_image_path = []
+        y_true = []
+        y_pred = []
+        y_probs = []
+        y_logits = []
+        with torch.no_grad():
+            for data in eval_loader:
+                all_idx.append(data['idx_lb'])
+                x = data['x_lb']
+                y = data['y_lb']
+                if eval_dest == 'test':
+                    image_path = data['image_path']
+                    all_image_path.append(image_path)
+
+                if isinstance(x, dict):
+                    x = {k: v.cuda(self.gpu) for k, v in x.items()}
+                else:
+                    x = x.cuda(self.gpu)
+                y = y.cuda(self.gpu)
+
+                num_batch = y.shape[0]
+                total_num += num_batch
+
+                logits = self.model(x)[out_key]
+                if self.args.loss == 'ce':
+                    y_true.extend(y.cpu().tolist())
+                    y_pred.extend(torch.max(logits, dim=-1)[1].cpu().tolist())
+                    y_logits.append(logits.cpu().numpy())
+                    y_probs.extend(torch.softmax(logits, dim=-1).cpu().tolist())
+                elif self.args.loss == 'bce':
+                    y_logits.append(torch.sigmoid(logits).float())
+                    y_true.append(y)
+        if self.args.loss == 'ce':
+            y_true = np.array(y_true)
+            y_pred = np.array(y_pred)
+            y_logits = np.concatenate(y_logits)
+            top1 = accuracy_score(y_true, y_pred)
+            top5 = top_k_accuracy_score(y_true, y_probs, k=5)
+            balanced_top1 = balanced_accuracy_score(y_true, y_pred)
+            precision = precision_score(y_true, y_pred, average='macro')
+            recall = recall_score(y_true, y_pred, average='macro')
+            F1 = f1_score(y_true, y_pred, average='macro')
+
+            cf_mat = confusion_matrix(y_true, y_pred, normalize='true')
+            self.print_fn('confusion matrix:\n' + np.array_str(cf_mat))
+            eval_dict = {eval_dest+'/top-1-acc': top1, eval_dest+'/top-5-acc': top5,
+                         eval_dest+'/balanced_acc': balanced_top1, eval_dest+'/precision': precision, eval_dest+'/recall': recall, eval_dest+'/F1': F1}
+        elif self.args.loss =='bce':
+            from semilearn.lighting.evaluator import Evaluator
+            evaluator = Evaluator(self.num_classes)
+            result_dict = evaluator.compute(y_logits, y_true)
+            eval_dict = {eval_dest + '/mAP': result_dict['mAP'],
+                         eval_dest + '/CF1': result_dict['CF1'],
+                         eval_dest + '/OF1': result_dict['OF1'],
+                         }
+
+        if return_logits:
+            eval_dict[eval_dest+'/logits'] = y_logits
+        if eval_dest == 'test':
+            logits_dict = {}
+            for i, minibatch in enumerate(all_image_path):
+                for j in range(len(minibatch)):
+                    logits_dict[minibatch[j]] = y_logits[i][j].tolist()
+            eval_dict[eval_dest+'/logits_dict'] = logits_dict
         return eval_dict
 
 
@@ -386,6 +501,7 @@ class AlgorithmBase:
             'epoch': self.epoch + 1,
             'best_it': self.best_it,
             'best_eval_acc': self.best_eval_acc,
+            'best_eval_mAP': self.best_eval_mAP,
         }
         if self.scheduler is not None:
             save_dict['scheduler'] = self.scheduler.state_dict()
@@ -417,6 +533,7 @@ class AlgorithmBase:
         self.epoch = self.start_epoch
         self.best_it = checkpoint['best_it']
         self.best_eval_acc = checkpoint['best_eval_acc']
+        self.best_eval_mAP = checkpoint['best_eval_mAP']
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         if self.scheduler is not None and 'scheduler' in checkpoint:
             self.scheduler.load_state_dict(checkpoint['scheduler'])

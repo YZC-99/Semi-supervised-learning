@@ -79,7 +79,10 @@ class MixMatch(AlgorithmBase):
 
             # with torch.no_grad():
             # Pseudo Label
-            input_labels = torch.cat([F.one_hot(y_lb, self.num_classes), sharpen_prob_x_ulb, sharpen_prob_x_ulb], dim=0)
+            # print(y_lb.shape, sharpen_prob_x_ulb.shape)
+            # input_labels = torch.cat([F.one_hot(y_lb, self.num_classes), sharpen_prob_x_ulb, sharpen_prob_x_ulb], dim=0)
+            y_lb = y_lb.to(sharpen_prob_x_ulb.dtype)
+            input_labels = torch.cat([y_lb, sharpen_prob_x_ulb, sharpen_prob_x_ulb], dim=0)
             # Mix up
             if self.mixup_manifold:
                 inputs = torch.cat((outs_x_lb['feat'], outs_x_ulb_w1['feat'], outs_x_ulb_w2['feat']))
