@@ -16,7 +16,7 @@ from seed import seed_everything
 parser = argparse.ArgumentParser(description="Semi-Supervised Learning (USB)")
 parser.add_argument("--algorithm", type=str, default="fixmatch")
 parser.add_argument("--net", type=str, default="resnet50")
-parser.add_argument("--finetune_mode", type=str, default="FT",help="FT or PL")
+parser.add_argument("--finetune_mode", type=str, default="",help="FT , PL, P1")
 parser.add_argument("--model_ckpt", type=str, default=None)
 parser.add_argument("--num_train_iter", type=int, default=12000)
 parser.add_argument("--num_eval_iter", type=int, default=117)
@@ -32,9 +32,17 @@ parser.add_argument("--lr", type=float, default=0.0002)
 parser.add_argument("--exterrio", type=float, default=0.0)
 parser.add_argument("--clinical", type=bool, default=False)
 parser.add_argument("--other", type=str, default='')
-
-
+parser.add_argument("--autodl", action='store_true',default=False)
 parser.add_argument("--epochs", type=int, default=1000000)
+
+# llm finetune
+parser.add_argument("--vpt_shallow", action='store_true',default=False)
+parser.add_argument("--vpt_deep", action='store_true',default=False)
+parser.add_argument("--vpt_last", action='store_true',default=False)
+
+parser.add_argument("--vpt_len", type=int,default=50)
+
+
 
 
 if __name__ == '__main__':
@@ -96,6 +104,7 @@ if __name__ == '__main__':
         'gpu': gpu,
         'world_size': 1,
         'distributed': False,
+        'autodl': args.autodl,
     }
     config = get_config(config)
 
@@ -113,18 +122,19 @@ if __name__ == '__main__':
     # 这种分为俩种情况，一种是有标签数据多，一种是无标签数据多。
     #1、有标签loader的长度大于无标签loader的长度，那么共同训练得时候loader得结束是以短得为准，因此要对长得数据进行无放回采样
     #2、无标签loader的长度大于有标签loader的长度，那么共同训练得时候loader得结束是以短得为准，因此要对长得数据进行有放回采样
-    if lb_loader_length > ulb_loader_length:
-        # 对有标签数据进行无放回采样，无标记数据不需要采样
-        lb_sampler = Memory_NoReplacement_Sampler(dataset_dict['train_lb'])
-        ulb_sampler = None
-    else:
-        # 对无标签数据进行无放回采样，有标记数据不需要采样
-        ulb_sampler = Memory_NoReplacement_Sampler(dataset_dict['train_ulb'])
-        lb_sampler = None
-    if config.algorithm == 'fullysupervised':
-        lb_sampler = None
-        ulb_sampler = None
-
+    # if lb_loader_length > ulb_loader_length:
+    #     # 对有标签数据进行无放回采样，无标记数据不需要采样
+    #     lb_sampler = Memory_NoReplacement_Sampler(dataset_dict['train_lb'])
+    #     ulb_sampler = None
+    # else:
+    #     # 对无标签数据进行无放回采样，有标记数据不需要采样
+    #     ulb_sampler = Memory_NoReplacement_Sampler(dataset_dict['train_ulb'])
+    #     lb_sampler = None
+    # if config.algorithm == 'fullysupervised':
+    #     lb_sampler = None
+    #     ulb_sampler = None
+    ulb_sampler = None
+    lb_sampler = None
     if config.algorithm == 'fullysupervised':
         lb_bs = config.batch_size
         ulb_bs = 1
@@ -153,13 +163,23 @@ if __name__ == '__main__':
         # 由于是多卡训练，所以需要去掉module
         ckpt_dict = {k.replace('module.', ''): v for k, v in ckpt_dict.items()}
         ckpt_dict = {k.replace('encoder.', ''): v for k, v in ckpt_dict.items()}
+        # 移除head
+        ckpt_dict = {k: v for k, v in ckpt_dict.items() if 'head' not in k}
         algorithm.model.load_state_dict(ckpt_dict,strict=False)
         print('load model from:', args.model_ckpt)
-        if args.finetune_mode == 'LP': # 除了最后一层全连接层，其他层都冻结
+        # exclude_list = ['classifier', 'head','deep_prompt_embeddings','prompt_embeddings']
+        if args.finetune_mode == 'LP' or args.finetune_mode == 'VPT': # 除了最后一层全连接层，其他层都冻结
             for name, param in algorithm.model.named_parameters():
-                if 'classifier' not in name:
-                    param.requires_grad = False
-
+                param.requires_grad = False
+                if 'classifier' in name or 'head' in name or 'deep_prompt_embeddings' in name or 'prompt_embeddings' in name \
+                        or 'prompt_proj' in name or 'prompt_dropout' in name:
+                # if name in exclude_list:
+                    param.requires_grad = True
+        # elif args.finetune_mode == 'P1': # 分类头和倒数第二层解冻
+        #     for name, param in algorithm.model.named_parameters():
+        #         param.requires_grad = False
+        #         if 'classifier' in name or 'head' in name or 'layer4' in name:
+        #             param.requires_grad = True
 
     trainer = Trainer(config, algorithm)
     algorithm.loader_dict['train_lb'] = train_lb_loader

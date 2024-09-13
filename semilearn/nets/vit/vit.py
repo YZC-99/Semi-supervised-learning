@@ -3,7 +3,8 @@
 
 import math
 from functools import partial
-
+from functools import reduce
+from operator import mul
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -128,6 +129,27 @@ class Block(nn.Module):
         x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
         return x
 
+class PromptedBlock(Block):
+    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, drop=0., attn_drop=0., init_values=None, drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, prompt_dim=None,vpt_len=50):
+        # 正确地调用父类构造函数，注意不要包含 prompt_dim
+        super(PromptedBlock, self).__init__(dim=dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, drop=drop, attn_drop=attn_drop, init_values=init_values, drop_path=drop_path, act_layer=act_layer, norm_layer=norm_layer)
+        self.prompt_proj = nn.Linear(prompt_dim if prompt_dim is not None else dim, dim)
+        self.prompt_dropout = nn.Dropout(0.1)
+        self.vpt_len = vpt_len
+
+    def forward(self, x, prompt):
+        # Project and expand the prompt to match the batch size and sequence length
+        prompt = self.prompt_proj(prompt)
+        prompt = self.prompt_dropout(prompt)
+        B, N, _ = x.shape
+        prompt = prompt.expand(B, -1, -1)  # Expand prompt to match the batch size
+
+        # Insert the prompt after the cls token but before the first token of the original sequence
+        x = torch.cat([x[:, :1, :], prompt, x[:, (1+self.vpt_len):, :]], dim=1)
+
+        # Proceed with the original block operations
+        return super().forward(x)
+
 
 
 class VisionTransformer(nn.Module):
@@ -217,7 +239,6 @@ class VisionTransformer(nn.Module):
         
         if only_fc:
             return self.head(x)
-        
         x = self.extract(x)
         if self.global_pool:
             x = x[:, 1:].mean(dim=1) if self.global_pool == 'avg' else x[:, 0]
@@ -239,6 +260,135 @@ class VisionTransformer(nn.Module):
             blocks=[(r'^{}blocks\.(\d+)'.format(prefix), None), (r'^{}norm'.format(prefix), (99999,))]
         )
 
+
+
+
+class PromptedVisionTransformer(VisionTransformer):
+    def __init__(self,img_size=224, patch_size=16, in_chans=3, num_classes=1000, global_pool='token',
+            embed_dim=768, depth=12, num_heads=12, mlp_ratio=4., qkv_bias=True,
+            drop_rate=0., attn_drop_rate=0., drop_path_rate=0., init_values=None,
+            embed_layer=PatchEmbed, norm_layer=None, act_layer=None, block_fn=Block,prompt_deep=False):
+        super().__init__(img_size=img_size, patch_size=patch_size, in_chans=in_chans, num_classes=num_classes, global_pool=global_pool,
+            embed_dim=embed_dim, depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,
+            drop_rate=drop_rate, attn_drop_rate=attn_drop_rate, drop_path_rate=drop_path_rate, init_values=init_values,
+            embed_layer=embed_layer, norm_layer=norm_layer, act_layer=act_layer, block_fn=block_fn)
+
+        prompt_dim = embed_dim
+        # init prompt embeddings
+        val = math.sqrt(6. / float(3 * reduce(mul, (patch_size,patch_size), 1) + embed_dim))  # noqa
+        self.prompt_embeddings = nn.Parameter(torch.zeros(
+            1, self.num_tokens, prompt_dim))
+        nn.init.uniform_(self.prompt_embeddings, -val, val)
+        self.prompt_proj = nn.Identity()
+        self.prompt_dropout = nn.Dropout(0.1)
+    def extract(self, x):
+        B = x.shape[0]
+        x = self.patch_embed(x)
+        x = torch.cat((self.cls_token.expand(x.shape[0], -1, -1), x), dim=1) # (batch, num_patches + 1, embed_dim)
+        x = self.pos_drop(x + self.pos_embed) # add position embedding
+        # add prompt
+        x = torch.cat((
+            x[:,:1,:], # cls token
+            self.prompt_dropout(self.prompt_proj(self.prompt_embeddings).expand(B, -1, -1)),
+            x[:,1:,:]
+        ),dim=1)
+        x = self.blocks(x)
+        x = self.norm(x)
+        return x
+
+    def train(self, mode= True):
+        if mode:
+            # training
+            self.patch_embed.eval()
+            self.blocks.eval()
+            self.norm.eval()
+            self.embeddings.eval()
+            self.prompt_proj.train()
+            self.prompt_dropout.train()
+        else:
+            # eval:
+            for module in self.children():
+                module.train(mode)
+
+class CustomSequential(nn.Module):
+    def __init__(self, *modules):
+        super(CustomSequential, self).__init__()
+        self.modules_list = nn.ModuleList(modules)
+    def __len__(self):
+        return len(self.modules_list)  # 返回包含的模块数量
+
+    def forward(self, x, prompts):
+        for module, prompt in zip(self.modules_list, prompts):
+            x = module(x, prompt=prompt)
+        return x
+
+
+class DeepPromptedVisionTransformer(VisionTransformer):
+    def __init__(self,img_size=224, patch_size=16, in_chans=3, num_classes=1000, global_pool='token',
+            embed_dim=768, depth=12, num_heads=12, mlp_ratio=4., qkv_bias=True,
+            drop_rate=0., attn_drop_rate=0., drop_path_rate=0., init_values=None,
+            embed_layer=PatchEmbed, norm_layer=None, act_layer=None, block_fn=Block,prompt_deep=True):
+        super().__init__(img_size=img_size, patch_size=patch_size, in_chans=in_chans, num_classes=num_classes, global_pool=global_pool,
+            embed_dim=embed_dim, depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,
+            drop_rate=drop_rate, attn_drop_rate=attn_drop_rate, drop_path_rate=drop_path_rate, init_values=init_values,
+            embed_layer=embed_layer, norm_layer=norm_layer, act_layer=act_layer, block_fn=block_fn)
+        norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
+        act_layer = act_layer or nn.GELU
+        self.prompt_deep = prompt_deep
+        self.vpt_len = 50
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+        self.blocks = CustomSequential(*[
+            PromptedBlock(
+                dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, init_values=init_values,
+                drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer)
+            for i in range(depth)])
+
+        prompt_dim = embed_dim
+        # init prompt embeddings
+        val = math.sqrt(6. / float(3 * reduce(mul, (patch_size,patch_size), 1) + embed_dim))  # noqa
+        # self.prompt_embeddings = nn.Parameter(torch.zeros(
+        #     1, self.vpt_len, prompt_dim))
+        # nn.init.uniform_(self.prompt_embeddings, -val, val)
+
+        self.deep_prompt_embeddings = nn.Parameter(torch.zeros(
+            len(self.blocks), self.vpt_len, prompt_dim))
+
+        nn.init.uniform_(self.deep_prompt_embeddings.data, -val, val)
+        self.prompt_proj = nn.Identity()
+        self.prompt_dropout = nn.Dropout(0.1)
+
+    def extract(self, x):
+        B = x.shape[0]
+        x = self.patch_embed(x)
+        x = torch.cat((self.cls_token.expand(x.shape[0], -1, -1), x), dim=1) # (batch, num_patches + 1, embed_dim)
+        x = self.pos_drop(x + self.pos_embed) # add position embedding
+        # add prompt
+        # x = torch.cat((
+        #     x[:,:1,:], # cls token
+        #     self.prompt_dropout(self.prompt_proj(self.prompt_embeddings).expand(B, -1, -1)),
+        #     x[:,(1+self.vpt_len):,:]
+        # ),dim=1)
+
+        x = self.blocks(x, prompts=self.deep_prompt_embeddings)
+        x = self.norm(x)
+        return x
+
+    # def train(self, mode= True):
+    #     if mode:
+    #         # training
+    #         self.patch_embed.eval()
+    #         self.blocks.eval()
+    #         self.pos_drop.eval()
+    #         self.norm.eval()
+    #         self.prompt_proj.train()
+    #         self.prompt_dropout.train()
+    #     else:
+    #         # eval:
+    #         for module in self.children():
+    #             module.train(mode)
+
+
+
 def vit_tiny_patch2_32(pretrained=False, pretrained_path=None, **kwargs):
     """ ViT-Tiny (Vit-Ti/2)
     """
@@ -259,16 +409,50 @@ def vit_small_patch2_32(pretrained=False, pretrained_path=None, **kwargs):
         model = load_checkpoint(model, pretrained_path)
     return model
 
-
 def vit_small_patch16_224(pretrained=False, pretrained_path=None, **kwargs):
     """ ViT-Small (ViT-S/16)
     """
     model_kwargs = dict(patch_size=16, embed_dim=384, depth=12, num_heads=6, drop_path_rate=0.2, **kwargs)
     model = VisionTransformer(**model_kwargs)
+    # model = PromptedVisionTransformer(**model_kwargs)
     if pretrained:
-        model = load_checkpoint(model, pretrained_path)    
+        timm_model_dict = timm_vit.vit_small_patch16_224(pretrained=True).state_dict()
+        # 从timm_model_dict中移除head部分
+        timm_model = {k: v for k, v in timm_model_dict.items() if 'head' not in k}
+        model.load_state_dict(timm_model,strict=False)
+        # model = load_checkpoint(model, 'https://storage.googleapis.com/vit_models/imagenet21k%2Bimagenet2012/ViT-B_16-224.npz')
+    # return timm_vit.vit_small_patch16_224(pretrained=True)
     return model
 
+def shallow_prompt_vit_small_patch16_224(pretrained=False, pretrained_path=None, **kwargs):
+    """ ViT-Small (ViT-S/16)
+    """
+    model_kwargs = dict(patch_size=16, embed_dim=384, depth=12, num_heads=6, drop_path_rate=0.2, **kwargs)
+    # model = VisionTransformer(**model_kwargs)
+    model = PromptedVisionTransformer(**model_kwargs)
+    if pretrained:
+        timm_model_dict = timm_vit.vit_small_patch16_224(pretrained=True).state_dict()
+        # 从timm_model_dict中移除head部分
+        timm_model = {k: v for k, v in timm_model_dict.items() if 'head' not in k}
+        model.load_state_dict(timm_model,strict=False)
+        # model = load_checkpoint(model, 'https://storage.googleapis.com/vit_models/imagenet21k%2Bimagenet2012/ViT-B_16-224.npz')
+    # return timm_vit.vit_small_patch16_224(pretrained=True)
+    return model
+
+def deep_prompt_vit_small_patch16_224(pretrained=False, pretrained_path=None, **kwargs):
+    """ ViT-Small (ViT-S/16)
+    """
+    model_kwargs = dict(patch_size=16, embed_dim=384, depth=12, num_heads=6, drop_path_rate=0.2, **kwargs)
+    # model = VisionTransformer(**model_kwargs)
+    model = DeepPromptedVisionTransformer(**model_kwargs)
+    if pretrained:
+        timm_model_dict = timm_vit.vit_small_patch16_224(pretrained=True).state_dict()
+        # 从timm_model_dict中移除head部分
+        timm_model = {k: v for k, v in timm_model_dict.items() if 'head' not in k}
+        model.load_state_dict(timm_model,strict=False)
+        # model = load_checkpoint(model, 'https://storage.googleapis.com/vit_models/imagenet21k%2Bimagenet2012/ViT-B_16-224.npz')
+    # return timm_vit.vit_small_patch16_224(pretrained=True)
+    return model
 
 def vit_base_patch16_96(pretrained=False, pretrained_path=None, **kwargs):
     """ ViT-Base (ViT-B/16) from original paper (https://arxiv.org/abs/2010.11929).
@@ -287,7 +471,56 @@ def vit_base_patch16_224(pretrained=False, pretrained_path=None, **kwargs):
     """
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, drop_path_rate=0.2, **kwargs)
     model = VisionTransformer(**model_kwargs)
-    # if pretrained:
-    #     model = load_checkpoint(model, pretrained_path)
-    # return timm_vit.vit_small_patch16_224(pretrained=pretrained)
+    if pretrained:
+        timm_model_dict = timm_vit.vit_base_patch16_224(pretrained=True).state_dict()
+        # 从timm_model_dict中移除head部分
+        timm_model = {k: v for k, v in timm_model_dict.items() if 'head' not in k}
+        model.load_state_dict(timm_model,strict=False)
+        # model = load_checkpoint(model, 'https://storage.googleapis.com/vit_models/imagenet21k%2Bimagenet2012/ViT-B_16-224.npz')
+    # return timm_vit.vit_small_patch16_224(pretrained=True)
+    return model
+
+def vit_large_patch16_224(pretrained=False, pretrained_path=None, **kwargs):
+    """ ViT-Base (ViT-B/16) from original paper (https://arxiv.org/abs/2010.11929).
+    ImageNet-1k weights fine-tuned from in21k @ 224x224, source https://github.com/google-research/vision_transformer.
+    """
+    model_kwargs = dict(patch_size=16, embed_dim=1024, depth=24, num_heads=16, drop_path_rate=0.2, **kwargs)
+    model = VisionTransformer(**model_kwargs)
+    if pretrained:
+        timm_model_dict = timm_vit.vit_large_patch16_224(pretrained=True).state_dict()
+        # 从timm_model_dict中移除head部分
+        timm_model = {k: v for k, v in timm_model_dict.items() if 'head' not in k}
+        model.load_state_dict(timm_model,strict=False)
+        # model = load_checkpoint(model, 'https://storage.googleapis.com/vit_models/imagenet21k%2Bimagenet2012/ViT-B_16-224.npz')
+    # return timm_vit.vit_small_patch16_224(pretrained=True)
+    return model
+
+def shallow_prompt_vit_base_patch16_224(pretrained=False, pretrained_path=None, **kwargs):
+    """ ViT-Base (ViT-B/16) from original paper (https://arxiv.org/abs/2010.11929).
+    ImageNet-1k weights fine-tuned from in21k @ 224x224, source https://github.com/google-research/vision_transformer.
+    """
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, drop_path_rate=0.2, **kwargs)
+    model = PromptedVisionTransformer(**model_kwargs)
+    if pretrained:
+        timm_model_dict = timm_vit.vit_base_patch16_224(pretrained=True).state_dict()
+        # 从timm_model_dict中移除head部分
+        timm_model = {k: v for k, v in timm_model_dict.items() if 'head' not in k}
+        model.load_state_dict(timm_model,strict=False)
+        # model = load_checkpoint(model, 'https://storage.googleapis.com/vit_models/imagenet21k%2Bimagenet2012/ViT-B_16-224.npz')
+    # return timm_vit.vit_small_patch16_224(pretrained=True)
+    return model
+
+def deep_prompt_vit_base_patch16_224(pretrained=False, pretrained_path=None, **kwargs):
+    """ ViT-Base (ViT-B/16) from original paper (https://arxiv.org/abs/2010.11929).
+    ImageNet-1k weights fine-tuned from in21k @ 224x224, source https://github.com/google-research/vision_transformer.
+    """
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, drop_path_rate=0.2, **kwargs)
+    model = DeepPromptedVisionTransformer(**model_kwargs)
+    if pretrained:
+        timm_model_dict = timm_vit.vit_base_patch16_224(pretrained=True).state_dict()
+        # 从timm_model_dict中移除head部分
+        timm_model = {k: v for k, v in timm_model_dict.items() if 'head' not in k}
+        model.load_state_dict(timm_model,strict=False)
+        # model = load_checkpoint(model, 'https://storage.googleapis.com/vit_models/imagenet21k%2Bimagenet2012/ViT-B_16-224.npz')
+    # return timm_vit.vit_small_patch16_224(pretrained=True)
     return model

@@ -23,12 +23,12 @@ def get_olives(args, alg,num_labels, num_classes,include_lb_to_ulb=False):
         label_end = 18 + 4
     else:
         label_end = 18
-
-    csv_dir = '/home/gu721/yzc/Semi-supervised-learning/data/olives/'
-    # csv_dir = "/home/ls/yzc/Semi-supervised-learning/data/olives/"
-
-    data_dir = "/home/gu721/yzc/data/ophthalmic_multimodal/OLIVES"
-    # data_dir = "/data/yzc_data/oct/OLIVES/"
+    if args.autodl:
+        csv_dir = '/home/gu721/yzc/Semi-supervised-learning/data/olives/'
+        data_dir = "/home/gu721/yzc/data/ophthalmic_multimodal/OLIVES"
+    else:
+        csv_dir = '/home/gu721/yzc/Semi-supervised-learning/data/olives/'
+        data_dir = "/home/gu721/yzc/data/ophthalmic_multimodal/OLIVES"
 
     train_all_info = pd.read_csv(f"{csv_dir}train_dataset.csv")
     train_all_info = train_all_info.fillna(0)

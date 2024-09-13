@@ -1,7 +1,8 @@
-from torch.utils.data import DataLoader, Dataset, Sampler
+from torch.utils.data import DataLoader, Dataset, Sampler,DistributedSampler
 import numpy as np
 
-class Memory_NoReplacement_Sampler(Sampler):
+# class Memory_NoReplacement_Sampler(Sampler):
+class Memory_NoReplacement_Sampler(DistributedSampler):
     def __init__(self, data_source):
         self.data_source = data_source
         self.indices = np.arange(len(data_source))

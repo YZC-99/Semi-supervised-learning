@@ -13,11 +13,33 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.hub import load_state_dict_from_url
+import numpy as np
+
 
 
 def load_checkpoint(model, checkpoint_path):
     if checkpoint_path and os.path.isfile(checkpoint_path):
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        # 检查文件扩展名是否为 .npz
+        if checkpoint_path.endswith('.npz'):
+            # 使用 NumPy 加载 .npz 文件
+            npzfile = np.load(checkpoint_path)
+            # 遍历 npz 中的所有项并手动加载到模型的对应参数中
+            for key in npzfile:
+                # 这里假设 npz 文件中的键与模型参数的键完全匹配
+                # 根据你的模型架构，你可能需要进行一些适配或重新命名
+                # 注意：npz 中的数组需要转换为 torch tensors
+                # 此处也假设模型的每个参数的名称已知且直接对应
+                # 可能需要根据模型的定义调整下面的代码
+                try:
+                    tensor = torch.from_numpy(npzfile[key])
+                    # 确保维度匹配，可能需要视情况调整 tensor 的形状
+                    model.state_dict()[key].copy_(tensor)
+                except KeyError:
+                    print(f"Warning: Key {key} found in npz file but not in model")
+        else:
+            # 如果不是 .npz 文件但还是需要加载，这里可以用 torch.load 或其他适当的方法
+            checkpoint = torch.load(checkpoint_path, map_location='cpu')
+            model.load_state_dict(checkpoint['state_dict'])
     else:
         checkpoint = load_state_dict_from_url(checkpoint_path, map_location='cpu')
 
