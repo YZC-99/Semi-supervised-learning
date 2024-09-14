@@ -159,7 +159,7 @@ if __name__ == '__main__':
     print('len(train_lb_loader):', len(train_lb_loader), 'len(train_ulb_loader):', len(train_ulb_loader), 'len(eval_loader):', len(eval_loader), 'len(test_loader):', len(test_loader))
 
     if args.model_ckpt is not None:
-        ckpt_dict = torch.load(args.model_ckpt)['model']
+        ckpt_dict = torch.load(args.model_ckpt,map_location='cpu')['model']
         # 由于是多卡训练，所以需要去掉module
         ckpt_dict = {k.replace('module.', ''): v for k, v in ckpt_dict.items()}
         ckpt_dict = {k.replace('encoder.', ''): v for k, v in ckpt_dict.items()}
@@ -173,13 +173,8 @@ if __name__ == '__main__':
                 param.requires_grad = False
                 if 'classifier' in name or 'head' in name or 'deep_prompt_embeddings' in name or 'prompt_embeddings' in name \
                         or 'prompt_proj' in name or 'prompt_dropout' in name:
-                # if name in exclude_list:
                     param.requires_grad = True
-        # elif args.finetune_mode == 'P1': # 分类头和倒数第二层解冻
-        #     for name, param in algorithm.model.named_parameters():
-        #         param.requires_grad = False
-        #         if 'classifier' in name or 'head' in name or 'layer4' in name:
-        #             param.requires_grad = True
+
 
     trainer = Trainer(config, algorithm)
     algorithm.loader_dict['train_lb'] = train_lb_loader

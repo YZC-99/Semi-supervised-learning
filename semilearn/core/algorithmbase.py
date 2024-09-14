@@ -75,6 +75,7 @@ class AlgorithmBase:
         self.start_epoch = 0
         self.best_eval_acc, self.best_it = 0.0, 0
         self.best_eval_mAP = 0.0
+        self.best_eval_OF1 = 0.0
         self.bn_controller = Bn_Controller()
         self.net_builder = net_builder
         self.ema = None
@@ -394,10 +395,15 @@ class AlgorithmBase:
             from semilearn.lighting.evaluator import Evaluator
             evaluator = Evaluator(self.num_classes)
             result_dict = evaluator.compute(y_logits, y_true)
-            eval_dict = {eval_dest + '/loss': total_loss / total_num, eval_dest + '/mAP': result_dict['mAP'],
-                         eval_dest + '/CF1': result_dict['CF1'],
+            # eval_dict = {eval_dest + '/loss': total_loss / total_num, eval_dest + '/mAP': result_dict['mAP'],
+            #              eval_dest + '/CF1': result_dict['CF1'],
+            #              eval_dest + '/OF1': result_dict['OF1'],
+            #              # "all_result":result_dict
+            #              }
+            eval_dict = {eval_dest + '/loss': total_loss / total_num,
                          eval_dest + '/OF1': result_dict['OF1'],
-                         # "all_result":result_dict
+                        eval_dest + '/AUC': result_dict['AUC'],
+                        eval_dest + '/AUPRC': result_dict['AUPRC'],
                          }
 
         self.ema.restore()
@@ -471,9 +477,14 @@ class AlgorithmBase:
             from semilearn.lighting.evaluator import Evaluator
             evaluator = Evaluator(self.num_classes)
             result_dict = evaluator.compute(y_logits, y_true)
-            eval_dict = {eval_dest + '/mAP': result_dict['mAP'],
-                         eval_dest + '/CF1': result_dict['CF1'],
+            # eval_dict = {eval_dest + '/mAP': result_dict['mAP'],
+            #              eval_dest + '/CF1': result_dict['CF1'],
+            #              eval_dest + '/OF1': result_dict['OF1'],
+            #              }
+            eval_dict = {
                          eval_dest + '/OF1': result_dict['OF1'],
+                         eval_dest + '/AUC': result_dict['AUC'],
+                         eval_dest + '/AUPRC': result_dict['AUPRC'],
                          }
 
         if return_logits:
@@ -502,6 +513,7 @@ class AlgorithmBase:
             'best_it': self.best_it,
             'best_eval_acc': self.best_eval_acc,
             'best_eval_mAP': self.best_eval_mAP,
+            'best_eval_OF1': self.best_eval_OF1,
         }
         if self.scheduler is not None:
             save_dict['scheduler'] = self.scheduler.state_dict()
@@ -534,6 +546,7 @@ class AlgorithmBase:
         self.best_it = checkpoint['best_it']
         self.best_eval_acc = checkpoint['best_eval_acc']
         self.best_eval_mAP = checkpoint['best_eval_mAP']
+        self.best_eval_OF1 = checkpoint['best_eval_OF1']
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         if self.scheduler is not None and 'scheduler' in checkpoint:
             self.scheduler.load_state_dict(checkpoint['scheduler'])
