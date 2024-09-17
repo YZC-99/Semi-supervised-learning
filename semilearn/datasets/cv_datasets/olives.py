@@ -69,12 +69,13 @@ def get_olives(args, alg,num_labels, num_classes,include_lb_to_ulb=False):
         transforms.Normalize(imgnet_mean, imgnet_std)
     ])
 
-
     lb_data, lb_targets, ulb_data, ulb_targets = split_ssl_multilabel_data(args, data, targets, num_classes,
                                                                 lb_num_labels=num_labels,
                                                                 ulb_num_labels=args.ulb_num_labels,
                                                                 include_lb_to_ulb=include_lb_to_ulb,
                                                                            load_exist=False)
+
+
 
 
 
@@ -92,8 +93,14 @@ def get_olives(args, alg,num_labels, num_classes,include_lb_to_ulb=False):
     exter_total_unlabel = pd.read_csv(f"{csv_dir}exter_total_unlabel.csv")
     exter_data = exter_total_unlabel.iloc[:, 0].values
     exter_data = [data_dir + i for i in exter_data]
+    exter_clinical_targets = exter_total_unlabel.iloc[:,1:].values # bcva,cst,eye_id,patient_id
     # 由于没有标签，所以需要将标签设置为全为0
-    exter_targets = np.zeros((len(exter_data), num_classes))
+    if args.clinical:
+        exter_targets = np.zeros((len(exter_data), num_classes))
+        exter_targets = np.concatenate([exter_targets,exter_clinical_targets],axis=-1)
+        # exter_targets[:][-4:] = exter_clinical_targets
+    # else:
+    #     exter_targets = np.zeros((len(exter_data), num_classes))
 
     # 输出外部数据集的数量
     print("exter data count: {}".format(len(exter_data)))
@@ -111,7 +118,7 @@ def get_olives(args, alg,num_labels, num_classes,include_lb_to_ulb=False):
     # 输出 ulb_data 的数量
     print("ulb data count: {}".format(len(ulb_data)))
 
-    lb_dset = OLIVESDataset(alg, lb_data, lb_targets, num_classes, transform_weak, False, None, False,clinical=args.clinical)
+    lb_dset = OLIVESDataset(alg, lb_data, lb_targets, num_classes, transform_weak, False, transform_strong,transform_strong, False,clinical=args.clinical)
     ulb_dset = OLIVESDataset(alg, ulb_data, ulb_targets, num_classes, transform_weak, True, transform_strong,transform_strong, False,clinical=args.clinical)
 
     val_all_info = pd.read_csv(f"{csv_dir}val_dataset.csv")
@@ -133,15 +140,20 @@ def get_olives(args, alg,num_labels, num_classes,include_lb_to_ulb=False):
 
 #
 class OLIVESDataset(BasicDataset):
-    # def __init__(self, alg, data, targets, num_classes, transform_weak, is_strong, transform_strong,transform_val, is_test=False,clinical=False):
-    #     super(OLIVESDataset, self).__init__(alg, data, targets, num_classes, transform_weak, is_strong, transform_strong,transform_val, is_test)
-    #     self.clinical = clinical
-    #
     def __sample__(self, idx):
-        path = self.data[idx]
-        img = Image.open(path).convert("RGB")
-        target = self.targets[idx]
-        return img, target,path
+        if self.clinical is not None:
+            path = self.data[idx]
+            img = Image.open(path).convert("RGB")
+            all_target = self.targets[idx]
+            biomarker = all_target[:-4]
+            clinical = all_target[-4:]
+            return img,biomarker,clinical,path
+
+        else:
+            path = self.data[idx]
+            img = Image.open(path).convert("RGB")
+            target = self.targets[idx]
+            return img,target,path
 
 if __name__ == '__main__':
     from semilearn import get_dataset, get_data_loader, get_net_builder, get_algorithm, get_config, Trainer

@@ -3,10 +3,12 @@
 # from https://github.com/pytorch/vision/blob/master/torchvision/models/resnet.py
 
 import torch
+import torchvision.models
+import torch.nn.functional as F
 from torch import Tensor
 import torch.nn as nn
 from typing import Type, Any, Callable, Union, List, Optional
-
+import timm
 
 def conv3x3(in_planes: int, out_planes: int, stride: int = 1, groups: int = 1, dilation: int = 1) -> nn.Conv2d:
     """3x3 convolution with padding"""
@@ -307,8 +309,7 @@ class ResNet50_clinical(nn.Module):
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.num_features = 512 * block.expansion
         self.classifier = nn.Linear(512 * block.expansion, num_classes)
-        self.classifier_bcvt = nn.Linear(512 * block.expansion, 100)
-        self.classifier_cst = nn.Linear(512 * block.expansion, 723)
+        self.clinical_head = nn.Linear(512 * block.expansion, 128)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -372,9 +373,9 @@ class ResNet50_clinical(nn.Module):
             return x
 
         out = self.classifier(x)
-        out_bcvt = self.classifier_bcvt(x)
-        out_cst = self.classifier_cst(x)
-        result_dict = {'logits': out, 'feat': x, 'logits_bcvt': out_bcvt, 'logits_cst': out_cst}
+        clinical_feat = self.clinical_head(x)
+        clinical_feat = F.normalize(clinical_feat,dim=1)
+        result_dict = {'logits': out, 'feat': x, 'clinical_feat': clinical_feat}
         return result_dict
 
     def extract(self, x):
@@ -404,8 +405,12 @@ class ResNet50_clinical(nn.Module):
 
 def resnet50(pretrained=False, pretrained_path=None, **kwargs):
     model = ResNet50(**kwargs)
+    model_dict = torchvision.models.resnet50(pretrained=True).state_dict()
+    model.load_state_dict(model_dict, strict=False)
     return model
 
 def resnet50_clinical(pretrained=False, pretrained_path=None, **kwargs):
     model = ResNet50_clinical(**kwargs)
+    model_dict = torchvision.models.resnet50(pretrained=True).state_dict()
+    model.load_state_dict(model_dict, strict=False)
     return model

@@ -31,6 +31,7 @@ class BasicDataset(Dataset):
                  strong_transform=None,
                  onehot=False,
                  is_test=False,
+                 clinical=None,
                  *args,
                  **kwargs):
         """
@@ -64,6 +65,7 @@ class BasicDataset(Dataset):
                 assert self.alg not in ['sequencematch'], f"alg {self.alg} requires medium augmentation"
 
         self.is_test = is_test
+        self.clinical = clinical
     
     def __sample__(self, idx):
         """ dataset specific sample function """
@@ -158,11 +160,30 @@ class BasicDataset(Dataset):
                 else:
                     return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s': self.strong_transform(img),'image_path':path}
 
+    def getitem_train_clinical(self, idx):
+        img, target,clinical,path = self.__sample__(idx)
+        if self.transform is None:
+            return  {'x_lb':  transforms.ToTensor()(img), 'y_lb': target}
+        else:
+            if isinstance(img, np.ndarray):
+                img = Image.fromarray(img)
+            img_w = self.transform(img)
+            if not self.is_ulb:
+                return {'idx_lb': idx, 'x_lb_w': img_w,'x_lb_s': self.strong_transform(img), 'y_lb': target,'in_clinical':clinical}
+            else:
+                if self.alg == 'fullysupervised' or self.alg == 'supervised':
+                    return {'idx_ulb': idx}
+                else:
+                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s': self.strong_transform(img),'ex_clinical':clinical}
+
     def __getitem__(self, idx):
         if self.is_test:
             return self.getitem_test(idx)
         else:
-            return self.getitem_train_val(idx)
+            if self.clinical is not None:
+                return self.getitem_train_clinical(idx)
+            else:
+                return self.getitem_train_val(idx)
 
 
     def __len__(self):

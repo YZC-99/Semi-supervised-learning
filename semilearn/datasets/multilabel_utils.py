@@ -37,9 +37,9 @@ def split_ssl_multilabel_data(args, data, targets, num_classes,
         lb_idx = np.load(lb_dump_path)
         ulb_idx = np.load(ulb_dump_path)
     else:
+
         lb_idx = set()
         remaining_indices = set(np.arange(len(data)))
-
         # 分层抽样以确保每个类别都有至少一个标记样本
         for class_idx in range(num_classes):
             class_indices = np.where(targets[:, class_idx] == 1)[0]

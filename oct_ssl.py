@@ -25,12 +25,13 @@ parser.add_argument("--batch_size", type=int, default=64)
 parser.add_argument("--device", type=int, default=1)
 parser.add_argument("--all_train_count", type=int, default=7408)
 parser.add_argument("--num_labels_ratio", type=float, default=0.05)
+parser.add_argument("--num_labels_mode", type=str, default='ratio',help='N1,N2,N3')
 parser.add_argument("--uratio", type=int, default=3)
 parser.add_argument("--amp", type=bool, default=True)
 parser.add_argument("--optim", type=str, default='Adam')
 parser.add_argument("--lr", type=float, default=0.0002)
 parser.add_argument("--exterrio", type=float, default=0.0)
-parser.add_argument("--clinical", type=bool, default=False)
+parser.add_argument("--clinical", type=str, default=None,help='simclr,eyeid,bcva,cst,patientid')
 parser.add_argument("--other", type=str, default='')
 parser.add_argument("--autodl", action='store_true',default=False)
 parser.add_argument("--epochs", type=int, default=1000000)
@@ -89,6 +90,7 @@ if __name__ == '__main__':
         # dataset configs
         'dataset': 'olives',
         'num_labels': num_labels,
+        'num_labels_mode': args.num_labels_mode,
         'ulb_num_labels': ulb_num_labels,
         'num_classes': 16,
         'img_size': 224,

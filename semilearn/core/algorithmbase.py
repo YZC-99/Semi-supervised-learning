@@ -419,7 +419,7 @@ class AlgorithmBase:
             eval_dict[eval_dest+'/logits_dict'] = logits_dict
         return eval_dict
 
-    def test(self, eval_dest='test', out_key='logits', return_logits=False):
+    def test(self, eval_dest='test', out_key='logits', return_logits=False,only_logits=False):
 
         self.model.eval().to(self.gpu)
 
@@ -431,6 +431,7 @@ class AlgorithmBase:
         y_pred = []
         y_probs = []
         y_logits = []
+        eval_dict = {}
         with torch.no_grad():
             for data in eval_loader:
                 all_idx.append(data['idx_lb'])
@@ -474,18 +475,15 @@ class AlgorithmBase:
             eval_dict = {eval_dest+'/top-1-acc': top1, eval_dest+'/top-5-acc': top5,
                          eval_dest+'/balanced_acc': balanced_top1, eval_dest+'/precision': precision, eval_dest+'/recall': recall, eval_dest+'/F1': F1}
         elif self.args.loss =='bce':
-            from semilearn.lighting.evaluator import Evaluator
-            evaluator = Evaluator(self.num_classes)
-            result_dict = evaluator.compute(y_logits, y_true)
-            # eval_dict = {eval_dest + '/mAP': result_dict['mAP'],
-            #              eval_dest + '/CF1': result_dict['CF1'],
-            #              eval_dest + '/OF1': result_dict['OF1'],
-            #              }
-            eval_dict = {
-                         eval_dest + '/OF1': result_dict['OF1'],
-                         eval_dest + '/AUC': result_dict['AUC'],
-                         eval_dest + '/AUPRC': result_dict['AUPRC'],
-                         }
+            if not only_logits:
+                from semilearn.lighting.evaluator import Evaluator
+                evaluator = Evaluator(self.num_classes)
+                result_dict = evaluator.compute(y_logits, y_true)
+                eval_dict = {
+                             eval_dest + '/OF1': result_dict['OF1'],
+                             eval_dest + '/AUC': result_dict['AUC'],
+                             eval_dest + '/AUPRC': result_dict['AUPRC'],
+                             }
 
         if return_logits:
             eval_dict[eval_dest+'/logits'] = y_logits

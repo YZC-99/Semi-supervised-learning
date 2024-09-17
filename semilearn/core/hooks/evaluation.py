@@ -65,11 +65,11 @@ class EvaluationHook(Hook):
             OF1 = test_dict['test/OF1']
             AUC = test_dict['test/AUC']
             AUPRC = test_dict['test/AUPRC']
-            CF1 = test_dict['test/CF1']
+            # CF1 = test_dict['test/CF1']
 
             # 存储为csv文件
             save_path = os.path.join(algorithm.save_dir,algorithm.save_name, 'test_results.csv')
-            df = pd.DataFrame({ 'OF1': [OF1],  'AUC': [AUC], 'AUPRC': [AUPRC], 'CF1': [CF1]})
+            df = pd.DataFrame({ 'OF1': [OF1],  'AUC': [AUC], 'AUPRC': [AUPRC]})
             df.to_csv(save_path, index=False)
 
 
