@@ -25,7 +25,7 @@ def get_olives(args, alg,num_labels, num_classes,include_lb_to_ulb=False):
         class_folder = 'olives_5'
     if args.autodl:
         csv_dir = f'/home/gu721/yzc/Semi-supervised-learning/data/{class_folder}/'
-        data_dir = f"/home/gu721/yzc/data/ophthalmic_multimodal/OLIVES"
+        data_dir = f"/root/autodl-tmp/OLIVES"
     else:
         csv_dir = f'/home/gu721/yzc/Semi-supervised-learning/data/{class_folder}/'
         data_dir = f"/home/gu721/yzc/data/ophthalmic_multimodal/OLIVES"
