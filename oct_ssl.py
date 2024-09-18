@@ -20,6 +20,7 @@ parser.add_argument("--finetune_mode", type=str, default="",help="FT , PL, P1")
 parser.add_argument("--model_ckpt", type=str, default=None)
 parser.add_argument("--num_train_iter", type=int, default=12000)
 parser.add_argument("--num_eval_iter", type=int, default=117)
+parser.add_argument("--num_classes", type=int, default=16)
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--batch_size", type=int, default=64)
 parser.add_argument("--device", type=int, default=1)
@@ -62,10 +63,13 @@ if __name__ == '__main__':
     exterrio=args.exterrio
     other=args.other
 
+    if args.num_labels_mode != 'ratio':
+        args.num_labels_ratio = 0.0
+
     if algorithm == 'fullysupervised':
         save_name = f'{args.net}_{other}/{args.finetune_mode}_{algorithm}_{optim}_lr{lr}_num_train_iter{num_train_iter}_bs{batch_size}_seed{args.seed}'
     else:
-        save_name = f'{args.net}_{other}/{args.finetune_mode}_{algorithm}_{optim}_extr{exterrio}_uratio{uratio}_nlratio{args.num_labels_ratio}_lr{lr}_num_train_iter{num_train_iter}_bs{batch_size}_seed{args.seed}'
+        save_name = f'{args.net}_{other}_{args.num_labels_mode}/{args.finetune_mode}_{algorithm}_{optim}_extr{exterrio}_uratio{uratio}_nlratio{args.num_labels_ratio}_lr{lr}_num_train_iter{num_train_iter}_bs{batch_size}_seed{args.seed}'
     num_labels = int(args.all_train_count * args.num_labels_ratio)
     ulb_num_labels = args.all_train_count - num_labels
     config = {
@@ -92,7 +96,7 @@ if __name__ == '__main__':
         'num_labels': num_labels,
         'num_labels_mode': args.num_labels_mode,
         'ulb_num_labels': ulb_num_labels,
-        'num_classes': 16,
+        'num_classes': args.num_classes,
         'img_size': 224,
         'data_dir': './data',
 

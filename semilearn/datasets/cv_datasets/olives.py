@@ -19,16 +19,20 @@ from semilearn.datasets.multilabel_utils import split_ssl_multilabel_data
 
 
 def get_olives(args, alg,num_labels, num_classes,include_lb_to_ulb=False):
-    if args.clinical:
-        label_end = 18 + 4
-    else:
-        label_end = 18
+
+    class_folder = 'olives'
+    if args.num_classes == 5:
+        class_folder = 'olives_5'
     if args.autodl:
-        csv_dir = '/home/gu721/yzc/Semi-supervised-learning/data/olives/'
-        data_dir = "/home/gu721/yzc/data/ophthalmic_multimodal/OLIVES"
+        csv_dir = f'/home/gu721/yzc/Semi-supervised-learning/data/{class_folder}/'
+        data_dir = f"/home/gu721/yzc/data/ophthalmic_multimodal/OLIVES"
     else:
-        csv_dir = '/home/gu721/yzc/Semi-supervised-learning/data/olives/'
-        data_dir = "/home/gu721/yzc/data/ophthalmic_multimodal/OLIVES"
+        csv_dir = f'/home/gu721/yzc/Semi-supervised-learning/data/{class_folder}/'
+        data_dir = f"/home/gu721/yzc/data/ophthalmic_multimodal/OLIVES"
+    if args.clinical:
+        label_end = 2 + args.num_classes + 4
+    else:
+        label_end = 2 + args.num_classes
 
     train_all_info = pd.read_csv(f"{csv_dir}train_dataset.csv")
     train_all_info = train_all_info.fillna(0)
@@ -99,8 +103,8 @@ def get_olives(args, alg,num_labels, num_classes,include_lb_to_ulb=False):
         exter_targets = np.zeros((len(exter_data), num_classes))
         exter_targets = np.concatenate([exter_targets,exter_clinical_targets],axis=-1)
         # exter_targets[:][-4:] = exter_clinical_targets
-    # else:
-    #     exter_targets = np.zeros((len(exter_data), num_classes))
+    else:
+        exter_targets = np.zeros((len(exter_data), num_classes))
 
     # 输出外部数据集的数量
     print("exter data count: {}".format(len(exter_data)))
@@ -108,7 +112,6 @@ def get_olives(args, alg,num_labels, num_classes,include_lb_to_ulb=False):
     # 根据args.exterrio的值（float），将外部数据集的数据添加到ulb_data中
     if args.exterrio > 0:
         exter_num = int(len(exter_data) * args.exterrio)
-
         # 将 ulb_data 和 exter_data[:exter_num] 连接在一起
         ulb_data = np.concatenate((ulb_data, exter_data[:exter_num]), axis=0)
         ulb_targets = np.concatenate((ulb_targets, exter_targets[:exter_num]), axis=0)

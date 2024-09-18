@@ -19,7 +19,6 @@ python oct_ssl.py --algorithm 'fixmatch' --num_train_iter 20000 --device 1 --num
 --other 'cst-bcva-eye_id' --finetune_mode 'FT' \
 --model_ckpt "/dk1/oct-exp-v1/pretrain-vit_small_patch16_224_/cst-bcva-eye_id/ckpt_epoch_25.pth"
 
-
 # 刚好10G显存
 python oct_ssl.py --algorithm 'fixmatch' --num_train_iter 20000 --device 1 --num_labels_ratio 0.05 --exterrio 1.0 \
 --net 'vit_small_patch16_224' --optim AdamW --batch_size 96  --lr 1e-3 \

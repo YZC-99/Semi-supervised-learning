@@ -28,6 +28,7 @@ def split_ssl_multilabel_data(args, data, targets, num_classes,
     # 如果 load_exist 为 True，则尝试加载已经存在的索引文件
     dump_dir = os.path.join(base_dir, 'data', args.dataset, 'multilabel_idx')
     os.makedirs(dump_dir, exist_ok=True)
+
     print("=============label number: =====================", lb_num_labels)
     print("=============unlabel number: =====================", ulb_num_labels)
     lb_dump_path = os.path.join(dump_dir, f'lb_multilabel_{lb_num_labels}_seed{args.seed}_idx.npy')
@@ -37,34 +38,66 @@ def split_ssl_multilabel_data(args, data, targets, num_classes,
         lb_idx = np.load(lb_dump_path)
         ulb_idx = np.load(ulb_dump_path)
     else:
+        if args.num_labels_mode == 'ratio':
+            lb_idx = set()
+            remaining_indices = set(np.arange(len(data)))
+            # 分层抽样以确保每个类别都有至少一个标记样本
+            for class_idx in range(num_classes):
+                class_indices = np.where(targets[:, class_idx] == 1)[0]
+                np.random.shuffle(class_indices)
+                lb_count = min(len(class_indices), 1)  # 确保每个类别至少有一个标记样本
+                lb_idx.update(class_indices[:lb_count])
+                remaining_indices.difference_update(class_indices[:lb_count])
 
-        lb_idx = set()
-        remaining_indices = set(np.arange(len(data)))
-        # 分层抽样以确保每个类别都有至少一个标记样本
-        for class_idx in range(num_classes):
-            class_indices = np.where(targets[:, class_idx] == 1)[0]
-            np.random.shuffle(class_indices)
-            lb_count = min(len(class_indices), 1)  # 确保每个类别至少有一个标记样本
-            lb_idx.update(class_indices[:lb_count])
-            remaining_indices.difference_update(class_indices[:lb_count])
+            lb_idx = np.array(list(lb_idx))
 
-        lb_idx = np.array(list(lb_idx))
+            # 如果标记数据数量不足，随机补充
+            if len(lb_idx) < lb_num_labels:
+                additional_lb_count = lb_num_labels - len(lb_idx)
+                additional_lb_indices = np.random.choice(list(remaining_indices), additional_lb_count, replace=False)
+                lb_idx = np.concatenate([lb_idx, additional_lb_indices])
+                remaining_indices.difference_update(additional_lb_indices)
 
-        # 如果标记数据数量不足，随机补充
-        if len(lb_idx) < lb_num_labels:
-            additional_lb_count = lb_num_labels - len(lb_idx)
-            additional_lb_indices = np.random.choice(list(remaining_indices), additional_lb_count, replace=False)
-            lb_idx = np.concatenate([lb_idx, additional_lb_indices])
-            remaining_indices.difference_update(additional_lb_indices)
-
-        ulb_idx = np.array(list(remaining_indices))
-        if ulb_num_labels:
-            ulb_idx = np.random.choice(ulb_idx, ulb_num_labels, replace=False)
-        else:
             ulb_idx = np.array(list(remaining_indices))
+            if ulb_num_labels:
+                ulb_idx = np.random.choice(ulb_idx, ulb_num_labels, replace=False)
+            else:
+                ulb_idx = np.array(list(remaining_indices))
 
-        if include_lb_to_ulb:
-            ulb_idx = np.concatenate([lb_idx, ulb_idx])
+            if include_lb_to_ulb:
+                ulb_idx = np.concatenate([lb_idx, ulb_idx])
+        else:
+            # Specific number of labels per class (e.g., N1, N2)
+            label_count = int(args.num_labels_mode[1:])  # Extract the number of labels per class from the mode string
+
+            lb_idx = set()
+            remaining_indices = set(np.arange(len(data)))
+
+            # Assign specified number of labeled samples per class
+            for class_idx in range(num_classes):
+                class_indices = np.where(targets[:, class_idx] == 1)[0]
+                np.random.shuffle(class_indices)
+                lb_count = min(len(class_indices),
+                               label_count)  # Ensure at least `label_count` labeled samples per class
+                lb_idx.update(class_indices[:lb_count])
+                remaining_indices.difference_update(class_indices[:lb_count])
+
+            lb_idx = np.array(list(lb_idx))
+
+            # If labeled data count is insufficient, randomly supplement
+            if len(lb_idx) < lb_num_labels:
+                additional_lb_count = lb_num_labels - len(lb_idx)
+                additional_lb_indices = np.random.choice(list(remaining_indices), additional_lb_count, replace=False)
+                lb_idx = np.concatenate([lb_idx, additional_lb_indices])
+                remaining_indices.difference_update(additional_lb_indices)
+
+            ulb_idx = np.array(list(remaining_indices))
+            if ulb_num_labels:
+                # ulb_idx = np.random.choice(ulb_idx, ulb_num_labels, replace=False)
+                ulb_idx = np.random.choice(ulb_idx, ulb_num_labels, replace=True)
+
+            if include_lb_to_ulb:
+                ulb_idx = np.concatenate([lb_idx, ulb_idx])
 
         np.save(lb_dump_path, lb_idx)
         np.save(ulb_dump_path, ulb_idx)
