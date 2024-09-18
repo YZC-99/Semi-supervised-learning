@@ -18,6 +18,7 @@ parser.add_argument("--algorithm", type=str, default="fixmatch")
 parser.add_argument("--net", type=str, default="resnet50")
 parser.add_argument("--finetune_mode", type=str, default="",help="FT , PL, P1")
 parser.add_argument("--model_ckpt", type=str, default=None)
+parser.add_argument("--dataset", type=str, default='olives')
 parser.add_argument("--num_train_iter", type=int, default=12000)
 parser.add_argument("--num_eval_iter", type=int, default=117)
 parser.add_argument("--num_classes", type=int, default=16)
@@ -27,7 +28,7 @@ parser.add_argument("--device", type=int, default=1)
 parser.add_argument("--all_train_count", type=int, default=7408)
 parser.add_argument("--num_labels_ratio", type=float, default=0.05)
 parser.add_argument("--num_labels_mode", type=str, default='ratio',help='N1,N2,N3')
-parser.add_argument("--uratio", type=int, default=3)
+parser.add_argument("--uratio", type=int, default=7)
 parser.add_argument("--amp", type=bool, default=True)
 parser.add_argument("--optim", type=str, default='Adam')
 parser.add_argument("--lr", type=float, default=0.0002)
@@ -69,7 +70,7 @@ if __name__ == '__main__':
     if algorithm == 'fullysupervised':
         save_name = f'{args.net}_{other}/{args.finetune_mode}_{algorithm}_{optim}_lr{lr}_num_train_iter{num_train_iter}_bs{batch_size}_seed{args.seed}'
     else:
-        save_name = f'{args.net}_{other}_{args.num_labels_mode}/{args.finetune_mode}_{algorithm}_{optim}_extr{exterrio}_uratio{uratio}_nlratio{args.num_labels_ratio}_lr{lr}_num_train_iter{num_train_iter}_bs{batch_size}_seed{args.seed}'
+        save_name = f'{args.net}_{other}/{args.finetune_mode}_{args.num_labels_mode}_{algorithm}_{optim}_extr{exterrio}_uratio{uratio}_nlratio{args.num_labels_ratio}_lr{lr}_num_train_iter{num_train_iter}_bs{batch_size}_seed{args.seed}'
     num_labels = int(args.all_train_count * args.num_labels_ratio)
     ulb_num_labels = args.all_train_count - num_labels
     config = {
@@ -92,7 +93,7 @@ if __name__ == '__main__':
         'batch_size': batch_size,
         'eval_batch_size': 64,
         # dataset configs
-        'dataset': 'olives',
+        'dataset': args.dataset,
         'num_labels': num_labels,
         'num_labels_mode': args.num_labels_mode,
         'ulb_num_labels': ulb_num_labels,
