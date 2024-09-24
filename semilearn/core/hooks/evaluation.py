@@ -30,6 +30,9 @@ class EvaluationHook(Hook):
                     algorithm.best_it = algorithm.it
                     algorithm.best_epoch = algorithm.epoch
                 else:
+
+                    # algorithm.best_eval_mAP_patience += 1
+
                     if (algorithm.it > int(algorithm.num_train_iter * 0.6)):
                         algorithm.best_eval_mAP_patience += 1
                     else:

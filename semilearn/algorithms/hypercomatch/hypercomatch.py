@@ -9,6 +9,7 @@ from semilearn.core import AlgorithmBase
 from semilearn.core.utils import ALGORITHMS
 from semilearn.algorithms.hooks import DistAlignQueueHook, FixedThresholdingHook
 from semilearn.algorithms.utils import SSL_Argument, str2bool, concat_all_gather
+from semilearn.loss.supconloss import SupConLoss
 
 
 class CoMatch_Net(nn.Module):
@@ -46,12 +47,16 @@ class CoMatch_Net(nn.Module):
         feat = self.backbone(x, only_feat=True)
         logits = self.backbone(feat, only_fc=True)
 
+        feat_proj1 = F.normalize(self.mlp_proj(feat), p=2, dim=1)
+        feat_proj2 = F.normalize(self.mlp_proj_2(feat), p=2, dim=1)
+        feat_proj3 = F.normalize(self.mlp_proj_3(feat), p=2, dim=1)
+
         if self.epass:
             feat_proj = self.l2norm((self.mlp_proj(feat) + self.mlp_proj_2(feat) + self.mlp_proj_3(feat))/3)
         else:
             feat_proj = self.l2norm(self.mlp_proj(feat))
 
-        return {'logits':logits, 'feat':feat_proj}
+        return {'logits':logits, 'feat':feat_proj,'feat_proj1':feat_proj1,'feat_proj2':feat_proj2,'feat_proj3':feat_proj3}
 
     def group_matcher(self, coarse=False):
         matcher = self.backbone.group_matcher(coarse, prefix='backbone.')
@@ -69,8 +74,8 @@ def comatch_contrastive_loss(feats_x_ulb_s_0, feats_x_ulb_s_1, Q, T=0.2):
     return loss
 
 
-@ALGORITHMS.register('comatch')
-class CoMatch(AlgorithmBase):
+@ALGORITHMS.register('hypercomatch')
+class HyperCoMatch(AlgorithmBase):
     """
         CoMatch algorithm (https://arxiv.org/abs/2011.11183).
         Reference implementation (https://github.com/salesforce/CoMatch/).
@@ -108,6 +113,7 @@ class CoMatch(AlgorithmBase):
                   contrast_p_cutoff=args.contrast_p_cutoff, hard_label=args.hard_label, 
                   queue_batch=args.queue_batch, smoothing_alpha=args.smoothing_alpha, da_len=args.da_len)
         self.lambda_c = args.contrast_loss_ratio
+        self.clinical_mode = args.clinical
 
     def init(self, T, p_cutoff, contrast_p_cutoff, hard_label=True, queue_batch=128, smoothing_alpha=0.999, da_len=256):
         self.T = T 
@@ -117,6 +123,7 @@ class CoMatch(AlgorithmBase):
         self.queue_batch = queue_batch
         self.smoothing_alpha = smoothing_alpha
         self.da_len = da_len
+        self.supconloss = SupConLoss()
 
         # TODO: put this part into a hook
         # memory smoothing
@@ -159,34 +166,50 @@ class CoMatch(AlgorithmBase):
         self.queue_probs[self.queue_ptr:self.queue_ptr + length, :] = probs      
         self.queue_ptr = (self.queue_ptr + length) % self.queue_size
 
-    def train_step(self, x_lb, y_lb, x_ulb_w, x_ulb_s_0, x_ulb_s_1):
-        num_lb = y_lb.shape[0] 
-
+    def train_step(self, x_lb, y_lb,in_clinical, x_ulb_w, x_ulb_s_0, x_ulb_s_1,ex_clinical):
+        num_lb = y_lb.shape[0]
+        # clinical = torch.cat([in_clinical, ex_clinical], dim=0)
         # inference and calculate sup/unsup losses
         with self.amp_cm():
-            if self.use_cat:
-                inputs = torch.cat((x_lb, x_ulb_w, x_ulb_s_0, x_ulb_s_1))
-                outputs = self.model(inputs)
-                logits, feats = outputs['logits'], outputs['feat']
-                logits_x_lb, feats_x_lb = logits[:num_lb], feats[:num_lb]
-                logits_x_ulb_w, logits_x_ulb_s_0, _ = logits[num_lb:].chunk(3)
-                feats_x_ulb_w, feats_x_ulb_s_0, feats_x_ulb_s_1 = feats[num_lb:].chunk(3)
-            else:       
-                outs_x_lb = self.model(x_lb)     
-                logits_x_lb, feats_x_lb = outs_x_lb['logits'], outs_x_lb['feat']
-                outs_x_ulb_s_0 = self.model(x_ulb_s_0)
-                logits_x_ulb_s_0, feats_x_ulb_s_0 = outs_x_ulb_s_0['logits'], outs_x_ulb_s_0['feat']
-                outs_x_ulb_s_1 = self.model(x_ulb_s_1)
-                feats_x_ulb_s_1 = outs_x_ulb_s_1['feat']
-                with torch.no_grad():
-                    outs_x_ulb_w = self.model(x_ulb_w)
-                    logits_x_ulb_w, feats_x_ulb_w = outs_x_ulb_w['logits'], outs_x_ulb_w['feat']
+            # if self.use_cat:
+            inputs = torch.cat((x_lb, x_ulb_w, x_ulb_s_0, x_ulb_s_1)) #
+            clinical = torch.cat([in_clinical, ex_clinical,ex_clinical,ex_clinical], dim=0)
+            outputs = self.model(inputs)
+            logits, feats,feat_proj1,feat_proj2,feat_proj3 = outputs['logits'], outputs['feat'],outputs['feat_proj1'],outputs['feat_proj2'],outputs['feat_proj3']
+            logits_x_lb, feats_x_lb = logits[:num_lb], feats[:num_lb]
+            logits_x_ulb_w, logits_x_ulb_s_0, _ = logits[num_lb:].chunk(3)
+            feats_x_ulb_w, feats_x_ulb_s_0, feats_x_ulb_s_1 = feats[num_lb:].chunk(3)
+            # else:
+            #     outs_x_lb = self.model(x_lb)
+            #     logits_x_lb, feats_x_lb = outs_x_lb['logits'], outs_x_lb['feat']
+            #     outs_x_ulb_s_0 = self.model(x_ulb_s_0)
+            #     logits_x_ulb_s_0, feats_x_ulb_s_0 = outs_x_ulb_s_0['logits'], outs_x_ulb_s_0['feat']
+            #     outs_x_ulb_s_1 = self.model(x_ulb_s_1)
+            #     feats_x_ulb_s_1 = outs_x_ulb_s_1['feat']
+            #     with torch.no_grad():
+            #         outs_x_ulb_w = self.model(x_ulb_w)
+            #         logits_x_ulb_w, feats_x_ulb_w = outs_x_ulb_w['logits'], outs_x_ulb_w['feat']
             feat_dict = {'x_lb': feats_x_lb, 'x_ulb_w': feats_x_ulb_w, 'x_ulb_s':[feats_x_ulb_s_0, feats_x_ulb_s_1]}
 
             # supervised loss
             sup_loss = self.ce_loss(logits_x_lb, y_lb, reduction='mean')
 
-            
+            # clinical_feats
+            clinical_feats = torch.cat([feat_proj1.unsqueeze(1),feat_proj2.unsqueeze(1),feat_proj3.unsqueeze(1)], dim=1)
+            # print(clinical[:][:,-4].shape)
+            self.supconloss.device = feat_proj1.device
+            if 'eyeid' == self.clinical_mode:
+                sup_con_loss = self.supconloss(clinical_feats,clinical[:][:,-4])
+            elif 'bcva' == self.clinical_mode:
+                sup_con_loss = self.supconloss(clinical_feats,clinical[:][:,-3])
+            elif 'cst' == self.clinical_mode:
+                sup_con_loss = self.supconloss(clinical_feats,clinical[:][:,-2])
+            elif 'patientid' == self.clinical_mode:
+                sup_con_loss = self.supconloss(clinical_feats,clinical[:][:,-1])
+            elif 'simclr' == self.clinical_mode:
+                sup_con_loss = self.supconloss(clinical_feats)
+
+
             with torch.no_grad():
                 logits_x_ulb_w = logits_x_ulb_w.detach()
                 feats_x_lb = feats_x_lb.detach()
@@ -199,7 +222,10 @@ class CoMatch(AlgorithmBase):
 
                 probs_orig = probs.clone()
                 # memory-smoothing 
-                if self.epoch >0 and self.it > self.queue_batch: 
+                if self.epoch >0 and self.it > self.queue_batch:
+                    # compute the affinity matrix, 这里针对原论文的公式7，主要是计算当前的无标记样本与bank中的样本的相似度
+                    # 利用特征相似性得到相似的，然后取对应的概率，这里的概率是bank中的概率
+                    # 但是这种方法可能是次优的，因为这种方法是基于特征的相似性，而特征相似性无法保证概率的相似性
                     A = torch.exp(torch.mm(feats_x_ulb_w, self.queue_feats.t()) / self.T)       
                     A = A / A.sum(1,keepdim=True)                    
                     probs = self.smoothing_alpha * probs + (1 - self.smoothing_alpha) * torch.mm(A, self.queue_probs)    
@@ -223,10 +249,32 @@ class CoMatch(AlgorithmBase):
             pos_mask = (Q >= self.contrast_p_cutoff).to(mask.dtype) # 大于某个值的才保留
             Q = Q * pos_mask
             Q = Q / Q.sum(1, keepdim=True) # 归一化
-
             contrast_loss = comatch_contrastive_loss(feats_x_ulb_s_0, feats_x_ulb_s_1, Q, T=self.T)
 
-            total_loss = sup_loss + self.lambda_u * unsup_loss + self.lambda_c * contrast_loss
+            # if 'eyeid' == self.clinical_mode:
+            #     clinical_label = clinical[:][:,-4]
+            # elif 'bcva' == self.clinical_mode:
+            #     clinical_label = clinical[:][:,-3]
+            # elif 'cst' == self.clinical_mode:
+            #     clinical_label = clinical[:][:,-2]
+            # elif 'patientid' == self.clinical_mode:
+            #     clinical_label = clinical[:][:,-1]
+
+            # hyperedges = {}
+            # for cls in range(self.num_classes):
+            #     # 获取每个类别对应的样本索引
+            #     cls_indices = (probs[:, cls] > 0.5).nonzero().squeeze()
+            #     if len(cls_indices) > 0:
+            #         # 对于每个类别，基于其超标签（clinical_label）构建超边
+            #         unique_cst_labels = torch.unique(clinical_label[cls_indices])
+            #         for cst_label in unique_cst_labels:
+            #             # 超边连接所有具有相同 CST 值的样本
+            #             connected_samples = (clinical_label == cst_label).nonzero().squeeze()
+            #             if len(connected_samples) > 1:  # 至少有两个样本才构成超边
+            #                 hyperedges[cst_label.item()] = connected_samples
+            # print(hyperedges)
+
+        total_loss = sup_loss + self.lambda_u * unsup_loss + self.lambda_c * contrast_loss + sup_con_loss
 
         out_dict = self.process_out_dict(loss=total_loss, feat=feat_dict)
         log_dict = self.process_log_dict(sup_loss=sup_loss.item(), 

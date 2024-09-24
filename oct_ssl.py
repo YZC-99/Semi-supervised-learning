@@ -68,9 +68,9 @@ if __name__ == '__main__':
         args.num_labels_ratio = 0.0
 
     if algorithm == 'fullysupervised':
-        save_name = f'{args.net}_{other}/{args.finetune_mode}_{algorithm}_{optim}_lr{lr}_num_train_iter{num_train_iter}_bs{batch_size}_seed{args.seed}'
+        save_name = f'{args.net}_{other}/{algorithm}_nlratio{args.num_labels_ratio}_{args.finetune_mode}_{optim}_lr{lr}_num_train_iter{num_train_iter}_bs{batch_size}_seed{args.seed}'
     else:
-        save_name = f'{args.net}_{other}/{args.finetune_mode}_{args.num_labels_mode}_{algorithm}_{optim}_extr{exterrio}_uratio{uratio}_nlratio{args.num_labels_ratio}_lr{lr}_num_train_iter{num_train_iter}_bs{batch_size}_seed{args.seed}'
+        save_name = f'{args.net}_{args.clinical}/{algorithm}_{other}_{args.finetune_mode}_{args.num_labels_mode}_{optim}_extr{exterrio}_uratio{uratio}_nlratio{args.num_labels_ratio}_lr{lr}_num_train_iter{num_train_iter}_bs{batch_size}_seed{args.seed}'
     num_labels = int(args.all_train_count * args.num_labels_ratio)
     ulb_num_labels = args.all_train_count - num_labels
     config = {
@@ -91,7 +91,7 @@ if __name__ == '__main__':
         'lr': lr,
         'momentum': 0.9,
         'batch_size': batch_size,
-        'eval_batch_size': 64,
+        'eval_batch_size': 128,
         # dataset configs
         'dataset': args.dataset,
         'num_labels': num_labels,
@@ -103,7 +103,7 @@ if __name__ == '__main__':
 
         # algorithm specific configs
         'hard_label': True,
-        'uratio': 3,
+        'uratio': uratio,
         'ulb_loss_ratio': 1.0,
         'loss': 'bce',
 

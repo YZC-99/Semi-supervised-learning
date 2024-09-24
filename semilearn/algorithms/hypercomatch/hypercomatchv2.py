@@ -9,11 +9,93 @@ from semilearn.core import AlgorithmBase
 from semilearn.core.utils import ALGORITHMS
 from semilearn.algorithms.hooks import DistAlignQueueHook, FixedThresholdingHook
 from semilearn.algorithms.utils import SSL_Argument, str2bool, concat_all_gather
+from semilearn.loss.supconloss import SupConLoss
 
+def construct_hypergraph(ex_clinical, pred_classes, feats):
+    """
+    构建超图 H 和对应的节点嵌入
 
-class CoMatch_Net(nn.Module):
-    def __init__(self, base, proj_size=128, epass=False):
-        super(CoMatch_Net, self).__init__()
+    Args:
+        ex_clinical: [N]，每个样本的 ex_clinical 值
+        pred_classes: [N]，每个样本的预测类别
+        feats: [N, F]，每个样本的特征嵌入
+
+    Returns:
+        H: [N, E]，超图的关联矩阵
+        node_embeddings: [N, F]，节点的嵌入
+    """
+    N = ex_clinical.size(0)
+    num_classes = pred_classes.max().item() + 1
+
+    # 获取 ex_clinical 的唯一值
+    unique_ex_clinical, ex_indices = torch.unique(ex_clinical, return_inverse=True)
+    num_ex_clinical = unique_ex_clinical.size(0)
+
+    # 超边数目：ex_clinical 的唯一值数目 + 类别数目
+    E = num_ex_clinical + num_classes
+
+    # 初始化超图 H
+    H = torch.zeros((N, E)).cuda()
+
+    # 连接样本到 ex_clinical 超边
+    H[torch.arange(N), ex_indices] = 1
+
+    # 连接样本到类别预测超边
+    class_edge_indices = num_ex_clinical + pred_classes
+    H[torch.arange(N), class_edge_indices] = 1
+
+    # 节点的嵌入就是样本的特征
+    node_embeddings = feats
+
+    return H, node_embeddings
+
+class HGNN(nn.Module):
+    def __init__(self, nb_classes, sz_embed, hidden):
+        super(HGNN, self).__init__()
+
+        self.theta1 = nn.Linear(sz_embed, hidden)
+        self.bn1 = nn.BatchNorm1d(hidden)
+        self.lrelu = nn.LeakyReLU(0.1)
+
+        self.theta2 = nn.Linear(hidden, nb_classes)
+
+    def compute_G(self, H):
+        # the number of hyperedge
+        n_edge = H.size(1)
+        # the weight of the hyperedge
+        we = torch.ones(n_edge).cuda()
+        # the degree of the node
+        Dv = (H * we).sum(dim=1)
+        # the degree of the hyperedge
+        De = H.sum(dim=0)
+
+        We = torch.diag(we)
+        inv_Dv_half = torch.diag(torch.pow(Dv, -0.5))
+        inv_De = torch.diag(torch.pow(De, -1))
+        H_T = torch.t(H)
+
+        # propagation matrix
+        G = torch.chain_matmul(inv_Dv_half, H, We, inv_De, H_T, inv_Dv_half)
+
+        return G
+
+    def forward(self, X, H):
+        # 这里的X是每个节点的embedding, H是超图的邻接矩阵
+        G = self.compute_G(H)
+
+        # 1st layer
+        X = G.matmul(self.theta1(X))
+        X = self.bn1(X)
+        X = self.lrelu(X)
+
+        # 2nd layer
+        out = G.matmul(self.theta2(X))
+
+        return out
+
+class HyperCoMatch_Net(nn.Module):
+    def __init__(self, base, proj_size=128, epass=False,num_classes=5):
+        super(HyperCoMatch_Net, self).__init__()
         self.backbone = base
         self.epass = epass
         self.num_features = base.num_features
@@ -36,6 +118,7 @@ class CoMatch_Net(nn.Module):
                 nn.ReLU(inplace=False),
                 nn.Linear(self.num_features, proj_size)
             ])
+        self.hgnn = HGNN(nb_classes=num_classes, sz_embed=proj_size, hidden=proj_size)
         
     def l2norm(self, x, power=2):
         norm = x.pow(power).sum(1, keepdim=True).pow(1. / power)
@@ -46,12 +129,16 @@ class CoMatch_Net(nn.Module):
         feat = self.backbone(x, only_feat=True)
         logits = self.backbone(feat, only_fc=True)
 
+        feat_proj1 = F.normalize(self.mlp_proj(feat), p=2, dim=1)
+        feat_proj2 = F.normalize(self.mlp_proj_2(feat), p=2, dim=1)
+        feat_proj3 = F.normalize(self.mlp_proj_3(feat), p=2, dim=1)
+
         if self.epass:
             feat_proj = self.l2norm((self.mlp_proj(feat) + self.mlp_proj_2(feat) + self.mlp_proj_3(feat))/3)
         else:
             feat_proj = self.l2norm(self.mlp_proj(feat))
 
-        return {'logits':logits, 'feat':feat_proj}
+        return {'logits':logits, 'feat':feat_proj,'feat_proj1':feat_proj1,'feat_proj2':feat_proj2,'feat_proj3':feat_proj3}
 
     def group_matcher(self, coarse=False):
         matcher = self.backbone.group_matcher(coarse, prefix='backbone.')
@@ -69,8 +156,8 @@ def comatch_contrastive_loss(feats_x_ulb_s_0, feats_x_ulb_s_1, Q, T=0.2):
     return loss
 
 
-@ALGORITHMS.register('comatch')
-class CoMatch(AlgorithmBase):
+@ALGORITHMS.register('hypercomatchv2')
+class HyperCoMatchV2(AlgorithmBase):
     """
         CoMatch algorithm (https://arxiv.org/abs/2011.11183).
         Reference implementation (https://github.com/salesforce/CoMatch/).
@@ -108,6 +195,7 @@ class CoMatch(AlgorithmBase):
                   contrast_p_cutoff=args.contrast_p_cutoff, hard_label=args.hard_label, 
                   queue_batch=args.queue_batch, smoothing_alpha=args.smoothing_alpha, da_len=args.da_len)
         self.lambda_c = args.contrast_loss_ratio
+        self.clinical_mode = args.clinical
 
     def init(self, T, p_cutoff, contrast_p_cutoff, hard_label=True, queue_batch=128, smoothing_alpha=0.999, da_len=256):
         self.T = T 
@@ -117,13 +205,18 @@ class CoMatch(AlgorithmBase):
         self.queue_batch = queue_batch
         self.smoothing_alpha = smoothing_alpha
         self.da_len = da_len
+        self.supconloss = SupConLoss()
 
         # TODO: put this part into a hook
         # memory smoothing
         self.queue_size = int(queue_batch * (self.args.uratio + 1) * self.args.batch_size) if self.args.dataset != 'imagenet' else self.args.K
         self.queue_feats = torch.zeros(self.queue_size, self.args.proj_size).cuda(self.gpu)
         self.queue_probs = torch.zeros(self.queue_size, self.args.num_classes).cuda(self.gpu)
+        self.queue_clinical = torch.zeros(self.queue_size, 1).cuda(self.gpu)
         self.queue_ptr = 0
+
+        # init clinical labels
+        self.clinical_memory = {'c1':[],'c2':[],'c3':[],'c4':[],'c5':[]}
         
     def set_hooks(self):
         self.register_hook(
@@ -145,48 +238,67 @@ class CoMatch(AlgorithmBase):
 
 
     @torch.no_grad()
-    def update_bank(self, feats, probs):
+    def update_bank(self, feats, probs,clinical):
         if self.distributed and self.world_size > 1:
             feats = concat_all_gather(feats)
             probs = concat_all_gather(probs)
+            clinical = concat_all_gather(clinical)
         # update memory bank
         length = feats.shape[0]
         if (self.queue_ptr + length) > self.queue_size:
             queue_ptr = self.queue_size - self.queue_ptr
             feats = feats[:queue_ptr]
             probs = probs[:queue_ptr]
+            clinical = clinical[:queue_ptr]
         self.queue_feats[self.queue_ptr:self.queue_ptr + length, :] = feats
         self.queue_probs[self.queue_ptr:self.queue_ptr + length, :] = probs      
+        self.queue_clinical[self.queue_ptr:self.queue_ptr + length, :] = clinical
         self.queue_ptr = (self.queue_ptr + length) % self.queue_size
 
-    def train_step(self, x_lb, y_lb, x_ulb_w, x_ulb_s_0, x_ulb_s_1):
-        num_lb = y_lb.shape[0] 
-
+    def train_step(self, x_lb, y_lb,in_clinical, x_ulb_w, x_ulb_s_0, x_ulb_s_1,ex_clinical):
+        num_lb = y_lb.shape[0]
+        num_ulb = x_ulb_w.shape[0]
         # inference and calculate sup/unsup losses
         with self.amp_cm():
-            if self.use_cat:
-                inputs = torch.cat((x_lb, x_ulb_w, x_ulb_s_0, x_ulb_s_1))
-                outputs = self.model(inputs)
-                logits, feats = outputs['logits'], outputs['feat']
-                logits_x_lb, feats_x_lb = logits[:num_lb], feats[:num_lb]
-                logits_x_ulb_w, logits_x_ulb_s_0, _ = logits[num_lb:].chunk(3)
-                feats_x_ulb_w, feats_x_ulb_s_0, feats_x_ulb_s_1 = feats[num_lb:].chunk(3)
-            else:       
-                outs_x_lb = self.model(x_lb)     
-                logits_x_lb, feats_x_lb = outs_x_lb['logits'], outs_x_lb['feat']
-                outs_x_ulb_s_0 = self.model(x_ulb_s_0)
-                logits_x_ulb_s_0, feats_x_ulb_s_0 = outs_x_ulb_s_0['logits'], outs_x_ulb_s_0['feat']
-                outs_x_ulb_s_1 = self.model(x_ulb_s_1)
-                feats_x_ulb_s_1 = outs_x_ulb_s_1['feat']
-                with torch.no_grad():
-                    outs_x_ulb_w = self.model(x_ulb_w)
-                    logits_x_ulb_w, feats_x_ulb_w = outs_x_ulb_w['logits'], outs_x_ulb_w['feat']
+            inputs = torch.cat((x_lb, x_ulb_w, x_ulb_s_0, x_ulb_s_1)) #
+            clinical = torch.cat([in_clinical, ex_clinical,ex_clinical,ex_clinical], dim=0)
+            if 'eyeid' == self.clinical_mode:
+                clinical = clinical[:][:,-4]
+            elif 'bcva' == self.clinical_mode:
+                clinical = clinical[:][:,-3]
+            elif 'cst' == self.clinical_mode:
+                clinical = clinical[:][:,-2]
+            elif 'patientid' == self.clinical_mode:
+                clinical = clinical[:][:,-1]
+            outputs = self.model(inputs)
+            logits, feats,feat_proj1,feat_proj2,feat_proj3 = outputs['logits'], outputs['feat'],outputs['feat_proj1'],outputs['feat_proj2'],outputs['feat_proj3']
+            logits_x_lb, feats_x_lb = logits[:num_lb], feats[:num_lb]
+            logits_x_ulb_w, logits_x_ulb_s_0, _ = logits[num_lb:].chunk(3)
+            feats_x_ulb_w, feats_x_ulb_s_0, feats_x_ulb_s_1 = feats[num_lb:].chunk(3)
+
             feat_dict = {'x_lb': feats_x_lb, 'x_ulb_w': feats_x_ulb_w, 'x_ulb_s':[feats_x_ulb_s_0, feats_x_ulb_s_1]}
 
             # supervised loss
             sup_loss = self.ce_loss(logits_x_lb, y_lb, reduction='mean')
 
-            
+            # 获取未标记数据的 ex_clinical 和类别预测
+            ex_clinical_ulb_w = clinical[num_lb:num_lb + num_ulb]
+            ex_clinical_ulb_s0 = clinical[num_lb + num_ulb:num_lb + 2 * num_ulb]
+            # 获取类别预测
+            pred_classes_ulb_w = (torch.sigmoid(logits_x_ulb_w) > 0.5).float()
+            pred_classes_ulb_s0 = (torch.sigmoid(logits_x_ulb_s_0) > 0.5).float()
+
+            # 构建超图 H1（针对 x_ulb_w）
+            H1, node_embeddings1 = construct_hypergraph(ex_clinical_ulb_w, pred_classes_ulb_w, feats_x_ulb_w)
+
+            # 构建超图 H2（针对 x_ulb_s_0）
+            H2, node_embeddings2 = construct_hypergraph(ex_clinical_ulb_s0, pred_classes_ulb_s0, feats_x_ulb_s_0)
+
+            # 使用 HGNN 进行传播
+            hgnn = HGNN(nb_classes=self.num_classes, sz_embed=feats_x_ulb_w.size(1), hidden=512).cuda()
+            out1 = hgnn(node_embeddings1, H1)
+            out2 = hgnn(node_embeddings2, H2)
+
             with torch.no_grad():
                 logits_x_ulb_w = logits_x_ulb_w.detach()
                 feats_x_lb = feats_x_lb.detach()
@@ -199,8 +311,8 @@ class CoMatch(AlgorithmBase):
 
                 probs_orig = probs.clone()
                 # memory-smoothing 
-                if self.epoch >0 and self.it > self.queue_batch: 
-                    A = torch.exp(torch.mm(feats_x_ulb_w, self.queue_feats.t()) / self.T)       
+                if self.epoch >0 and self.it > self.queue_batch:
+                    A = torch.exp(torch.mm(feats_x_ulb_w, self.queue_feats.t()) / self.T)
                     A = A / A.sum(1,keepdim=True)                    
                     probs = self.smoothing_alpha * probs + (1 - self.smoothing_alpha) * torch.mm(A, self.queue_probs)    
                 
@@ -223,10 +335,11 @@ class CoMatch(AlgorithmBase):
             pos_mask = (Q >= self.contrast_p_cutoff).to(mask.dtype) # 大于某个值的才保留
             Q = Q * pos_mask
             Q = Q / Q.sum(1, keepdim=True) # 归一化
-
             contrast_loss = comatch_contrastive_loss(feats_x_ulb_s_0, feats_x_ulb_s_1, Q, T=self.T)
 
-            total_loss = sup_loss + self.lambda_u * unsup_loss + self.lambda_c * contrast_loss
+
+
+        total_loss = sup_loss + self.lambda_u * unsup_loss + self.lambda_c * contrast_loss + sup_con_loss
 
         out_dict = self.process_out_dict(loss=total_loss, feat=feat_dict)
         log_dict = self.process_log_dict(sup_loss=sup_loss.item(), 

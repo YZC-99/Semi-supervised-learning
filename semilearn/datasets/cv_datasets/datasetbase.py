@@ -115,7 +115,8 @@ class BasicDataset(Dataset):
                     img_s1_rot = torchvision.transforms.functional.rotate(img_s1, rotate_v1)
                     img_s2 = self.strong_transform(img)
                     return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s_0': img_s1, 'x_ulb_s_1':img_s2, 'x_ulb_s_0_rot':img_s1_rot, 'rot_v':rotate_v_list.index(rotate_v1)}
-                elif self.alg == 'comatch':
+                elif self.alg == 'comatch' or self.alg == 'conmatch' or self.alg == 'comatch_wo_memory' or \
+                        self.alg == 'comatch_wo_graph' or self.alg == 'hyperfixmatch':
                     return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s_0': self.strong_transform(img), 'x_ulb_s_1':self.strong_transform(img)}
                 else:
                     return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s': self.strong_transform(img)}
@@ -162,6 +163,7 @@ class BasicDataset(Dataset):
 
     def getitem_train_clinical(self, idx):
         img, target,clinical,path = self.__sample__(idx)
+        clinical = clinical.astype(np.int8)
         if self.transform is None:
             return  {'x_lb':  transforms.ToTensor()(img), 'y_lb': target}
         else:
@@ -169,10 +171,15 @@ class BasicDataset(Dataset):
                 img = Image.fromarray(img)
             img_w = self.transform(img)
             if not self.is_ulb:
-                return {'idx_lb': idx, 'x_lb_w': img_w,'x_lb_s': self.strong_transform(img), 'y_lb': target,'in_clinical':clinical}
+                if self.alg == 'clinfixmatch':
+                    return {'idx_lb': idx, 'x_lb_w': img_w,'x_lb_s': self.strong_transform(img), 'y_lb': target,'in_clinical':clinical}
+                elif self.alg == 'hypercomatch' or self.alg == 'hyperfixmatch':
+                    return {'idx_lb': idx, 'x_lb': img_w,'y_lb': target, 'in_clinical': clinical}
             else:
                 if self.alg == 'fullysupervised' or self.alg == 'supervised':
                     return {'idx_ulb': idx}
+                elif self.alg == 'hypercomatch' or self.alg == 'hyperfixmatch':
+                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s_0': self.strong_transform(img), 'x_ulb_s_1':self.strong_transform(img),'ex_clinical':clinical}
                 else:
                     return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s': self.strong_transform(img),'ex_clinical':clinical}
 

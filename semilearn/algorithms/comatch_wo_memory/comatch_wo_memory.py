@@ -69,8 +69,8 @@ def comatch_contrastive_loss(feats_x_ulb_s_0, feats_x_ulb_s_1, Q, T=0.2):
     return loss
 
 
-@ALGORITHMS.register('comatch')
-class CoMatch(AlgorithmBase):
+@ALGORITHMS.register('comatch_wo_memory')
+class CoMatch_wo_Memory(AlgorithmBase):
     """
         CoMatch algorithm (https://arxiv.org/abs/2011.11183).
         Reference implementation (https://github.com/salesforce/CoMatch/).
@@ -120,10 +120,10 @@ class CoMatch(AlgorithmBase):
 
         # TODO: put this part into a hook
         # memory smoothing
-        self.queue_size = int(queue_batch * (self.args.uratio + 1) * self.args.batch_size) if self.args.dataset != 'imagenet' else self.args.K
-        self.queue_feats = torch.zeros(self.queue_size, self.args.proj_size).cuda(self.gpu)
-        self.queue_probs = torch.zeros(self.queue_size, self.args.num_classes).cuda(self.gpu)
-        self.queue_ptr = 0
+        # self.queue_size = int(queue_batch * (self.args.uratio + 1) * self.args.batch_size) if self.args.dataset != 'imagenet' else self.args.K
+        # self.queue_feats = torch.zeros(self.queue_size, self.args.proj_size).cuda(self.gpu)
+        # self.queue_probs = torch.zeros(self.queue_size, self.args.num_classes).cuda(self.gpu)
+        # self.queue_ptr = 0
         
     def set_hooks(self):
         self.register_hook(
@@ -143,21 +143,6 @@ class CoMatch(AlgorithmBase):
         ema_model.load_state_dict(self.check_prefix_state_dict(self.model.state_dict()))
         return ema_model
 
-
-    @torch.no_grad()
-    def update_bank(self, feats, probs):
-        if self.distributed and self.world_size > 1:
-            feats = concat_all_gather(feats)
-            probs = concat_all_gather(probs)
-        # update memory bank
-        length = feats.shape[0]
-        if (self.queue_ptr + length) > self.queue_size:
-            queue_ptr = self.queue_size - self.queue_ptr
-            feats = feats[:queue_ptr]
-            probs = probs[:queue_ptr]
-        self.queue_feats[self.queue_ptr:self.queue_ptr + length, :] = feats
-        self.queue_probs[self.queue_ptr:self.queue_ptr + length, :] = probs      
-        self.queue_ptr = (self.queue_ptr + length) % self.queue_size
 
     def train_step(self, x_lb, y_lb, x_ulb_w, x_ulb_s_0, x_ulb_s_1):
         num_lb = y_lb.shape[0] 
@@ -189,28 +174,15 @@ class CoMatch(AlgorithmBase):
             
             with torch.no_grad():
                 logits_x_ulb_w = logits_x_ulb_w.detach()
-                feats_x_lb = feats_x_lb.detach()
-                feats_x_ulb_w = feats_x_ulb_w.detach()
 
                 # probs = torch.softmax(logits_x_ulb_w, dim=1)            
                 probs = self.compute_prob(logits_x_ulb_w)
                 # distribution alignment
                 probs = self.call_hook("dist_align", "DistAlignHook", probs_x_ulb=probs.detach())
 
-                probs_orig = probs.clone()
-                # memory-smoothing 
-                if self.epoch >0 and self.it > self.queue_batch: 
-                    A = torch.exp(torch.mm(feats_x_ulb_w, self.queue_feats.t()) / self.T)       
-                    A = A / A.sum(1,keepdim=True)                    
-                    probs = self.smoothing_alpha * probs + (1 - self.smoothing_alpha) * torch.mm(A, self.queue_probs)    
-                
                 mask = self.call_hook("masking", "MaskingHook", logits_x_ulb=probs, softmax_x_ulb=False)    
                 
-                feats_w = torch.cat([feats_x_ulb_w, feats_x_lb],dim=0)   
-                # probs_w = torch.cat([probs_orig, F.one_hot(y_lb, num_classes=self.num_classes)],dim=0)
-                probs_w = torch.cat([probs_orig, y_lb],dim=0)
 
-                self.update_bank(feats_w, probs_w)
 
             unsup_loss = self.consistency_loss(logits_x_ulb_s_0,
                                           probs,
@@ -236,29 +208,29 @@ class CoMatch(AlgorithmBase):
                                          util_ratio=mask.float().mean().item())
         return out_dict, log_dict
 
-    def get_save_dict(self):
-        save_dict =  super().get_save_dict()
-        save_dict['queue_feats'] = self.queue_feats.cpu()
-        save_dict['queue_probs'] = self.queue_probs.cpu()
-        save_dict['queue_size'] = self.queue_size
-        save_dict['queue_ptr'] = self.queue_ptr
-        save_dict['p_model'] = self.hooks_dict['DistAlignHook'].p_model.cpu() 
-        save_dict['p_model_ptr'] = self.hooks_dict['DistAlignHook'].p_model_ptr.cpu()
-        # save_dict['p_target'] = self.hooks_dict['DistAlignHook'].p_target.cpu() 
-        # save_dict['p_target_ptr'] = self.hooks_dict['DistAlignHook'].p_target_ptr.cpu()
-        return save_dict
+    # def get_save_dict(self):
+    #     save_dict =  super().get_save_dict()
+    #     save_dict['queue_feats'] = self.queue_feats.cpu()
+    #     save_dict['queue_probs'] = self.queue_probs.cpu()
+    #     save_dict['queue_size'] = self.queue_size
+    #     save_dict['queue_ptr'] = self.queue_ptr
+    #     save_dict['p_model'] = self.hooks_dict['DistAlignHook'].p_model.cpu()
+    #     save_dict['p_model_ptr'] = self.hooks_dict['DistAlignHook'].p_model_ptr.cpu()
+    #     # save_dict['p_target'] = self.hooks_dict['DistAlignHook'].p_target.cpu()
+    #     # save_dict['p_target_ptr'] = self.hooks_dict['DistAlignHook'].p_target_ptr.cpu()
+    #     return save_dict
 
-    def load_model(self, load_path):
-        checkpoint = super().load_model(load_path)
-        self.queue_feats = checkpoint['queue_feats'].cuda(self.gpu)
-        self.queue_probs = checkpoint['queue_probs'].cuda(self.gpu)
-        self.queue_size = checkpoint['queue_size']
-        self.queue_ptr = checkpoint['queue_ptr']
-        self.hooks_dict['DistAlignHook'].p_model = checkpoint['p_model'].cuda(self.args.gpu)
-        self.hooks_dict['DistAlignHook'].p_model_ptr = checkpoint['p_model_ptr'].cuda(self.args.gpu)
-        # self.hooks_dict['DistAlignHook'].p_target = checkpoint['p_target'].cuda(self.args.gpu)
-        # self.hooks_dict['DistAlignHook'].p_target_ptr = checkpoint['p_target_ptr'].cuda(self.args.gpu)
-        return checkpoint
+    # def load_model(self, load_path):
+    #     checkpoint = super().load_model(load_path)
+    #     self.queue_feats = checkpoint['queue_feats'].cuda(self.gpu)
+    #     self.queue_probs = checkpoint['queue_probs'].cuda(self.gpu)
+    #     self.queue_size = checkpoint['queue_size']
+    #     self.queue_ptr = checkpoint['queue_ptr']
+    #     self.hooks_dict['DistAlignHook'].p_model = checkpoint['p_model'].cuda(self.args.gpu)
+    #     self.hooks_dict['DistAlignHook'].p_model_ptr = checkpoint['p_model_ptr'].cuda(self.args.gpu)
+    #     # self.hooks_dict['DistAlignHook'].p_target = checkpoint['p_target'].cuda(self.args.gpu)
+    #     # self.hooks_dict['DistAlignHook'].p_target_ptr = checkpoint['p_target_ptr'].cuda(self.args.gpu)
+    #     return checkpoint
 
 
     @staticmethod

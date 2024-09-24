@@ -24,7 +24,7 @@ def get_olives(args, alg,num_labels, num_classes,include_lb_to_ulb=False):
     if args.num_classes == 5:
         class_folder = 'olives_5'
     if args.autodl:
-        csv_dir = f'/home/gu721/yzc/Semi-supervised-learning/data/{class_folder}/'
+        csv_dir = f'/root/Semi-supervised-learning/data/{class_folder}/'
         data_dir = f"/root/autodl-tmp/OLIVES"
     else:
         csv_dir = f'/home/gu721/yzc/Semi-supervised-learning/data/{class_folder}/'
@@ -87,9 +87,9 @@ def get_olives(args, alg,num_labels, num_classes,include_lb_to_ulb=False):
     # print("ulb count: {}".format(np.sum(ulb_targets, axis=0)))
 
     #
-    if alg == 'fullysupervised':
-        lb_data = data
-        lb_targets = targets
+    # if alg == 'fullysupervised':
+    #     lb_data = data
+    #     lb_targets = targets
 
 
 
