@@ -15,7 +15,7 @@ def KL(out1,out2,eps=1e-5):
     torch.distributed.all_reduce(kl)
     return kl
 
-def construct_hypergraph(ex_clinical, pred_classes, feats):
+def construct_hypergraph_multilabel(ex_clinical, pred_classes, feats):
     """
     构建超图 H 和对应的节点嵌入
 
@@ -59,6 +59,54 @@ def construct_hypergraph(ex_clinical, pred_classes, feats):
 
     # 创建超图关联矩阵 H
     H = torch.zeros((num_nodes, num_classes), device=device)
+    H[node_indices_for_samples, class_indices] = 1  # 设置关联矩阵中的值为 1
+
+    return H, node_features
+def construct_hypergraph_single_label(ex_clinical, pred_classes, feats):
+    """
+    构建超图 H 和对应的节点嵌入（单标签分类）
+
+    Args:
+        ex_clinical: [N]，每个样本的 ex_clinical 值
+        pred_classes: [N]，每个样本的预测类别（单标签，类别索引）
+        feats: [N, F]，每个样本的特征嵌入
+
+    Returns:
+        H: [num_nodes, num_classes]，超图的关联矩阵
+        node_embeddings: [num_nodes, F]，节点的嵌入
+    """
+    N = ex_clinical.size(0)
+    device = ex_clinical.device
+    num_classes = pred_classes.max().item() + 1  # 假设类别索引从 0 开始
+
+    # 获取 ex_clinical 的唯一值及其在节点中的索引
+    unique_ex_clinical, node_indices = torch.unique(ex_clinical, return_inverse=True)
+    num_nodes = unique_ex_clinical.size(0)
+
+    # 计算每个节点的特征（对于相同 ex_clinical 值的样本，取特征平均）
+    F = feats.size(1)
+    node_features = torch.zeros((num_nodes, F), device=device)
+    counts = torch.zeros(num_nodes, 1, device=device)
+
+    # 使用 index_add 累加特征和计数
+    node_features = node_features.index_add(0, node_indices, feats)
+    counts = counts.index_add(0, node_indices, torch.ones((N, 1), device=device))
+
+    # 计算平均特征
+    node_features = node_features / counts  # [num_nodes, F]
+
+    # 构建超图关联矩阵 H
+    # 获取样本的类别索引
+    class_indices = pred_classes  # [N]
+
+    # 获取对应的节点索引
+    node_indices_for_samples = node_indices  # [N]
+
+    # 创建超图关联矩阵 H
+    H = torch.zeros((num_nodes, num_classes), device=device)
+
+    # 由于多个样本可能对应同一个节点（ex_clinical 值相同），
+    # 因此需要处理节点与多个类别的关联
     H[node_indices_for_samples, class_indices] = 1  # 设置关联矩阵中的值为 1
 
     return H, node_features
@@ -232,12 +280,12 @@ class HyperFixMatch(AlgorithmBase):
 
     def set_model(self):
         model = super().set_model()
-        model = HyperMatch_Net(model, proj_size=self.args.proj_size, epass=self.args.use_epass)
+        model = HyperMatch_Net(model, proj_size=self.args.proj_size, epass=self.args.use_epass,num_classes=self.num_classes)
         return model
 
     def set_ema_model(self):
         ema_model = self.net_builder(num_classes=self.num_classes)
-        ema_model = HyperMatch_Net(ema_model, proj_size=self.args.proj_size, epass=self.args.use_epass)
+        ema_model = HyperMatch_Net(ema_model, proj_size=self.args.proj_size, epass=self.args.use_epass,num_classes=self.num_classes)
         ema_model.load_state_dict(self.check_prefix_state_dict(self.model.state_dict()))
         return ema_model
     def train_step(self, x_lb, y_lb,in_clinical, x_ulb_w, x_ulb_s_0, x_ulb_s_1,ex_clinical):
@@ -249,23 +297,29 @@ class HyperFixMatch(AlgorithmBase):
             clinical = torch.cat([in_clinical, ex_clinical,ex_clinical,ex_clinical], dim=0)
             clinical2 = clinical
             clinical3 = clinical
-            if 'eyeid' == self.clinical_mode:
+            if 'eyeid' == self.clinical_mode or 'localization' == self.clinical_mode:
                 clinical = clinical[:][:,-4]
-            elif 'bcva' == self.clinical_mode:
+            elif 'bcva' == self.clinical_mode or 'sex' == self.clinical_mode:
                 clinical = clinical[:][:,-3]
-            elif 'cst' == self.clinical_mode:
+            elif 'cst' == self.clinical_mode  or 'age' == self.clinical_mode:
                 clinical = clinical[:][:,-2]
-            elif 'patientid' == self.clinical_mode:
+            elif 'patientid' == self.clinical_mode  or 'lesion_id' == self.clinical_mode:
                 clinical = clinical[:][:,-1]
-            elif 'eyeid-cst' == self.clinical_mode:
-                clinical = clinical[:][:, -4]
-                clinical2 = clinical2[:][:, -2]
-            elif 'eyeid-bcva' == self.clinical_mode:
+            elif 'eyeid-bcva' == self.clinical_mode or 'localization-sex' == self.clinical_mode:
                 clinical = clinical[:][:, -4]
                 clinical2 = clinical2[:][:, -3]
-            elif 'bcva-cst' == self.clinical_mode:
+            elif 'eyeid-cst' == self.clinical_mode or 'localization-age' == self.clinical_mode:
+                clinical = clinical[:][:, -4]
+                clinical2 = clinical2[:][:, -2]
+            elif 'localization-leison_id' == self.clinical_mode:
+                clinical = clinical[:][:, -4]
+                clinical2 = clinical2[:][:, -1]
+            elif 'bcva-cst' == self.clinical_mode or 'sex-age' == self.clinical_mode:
                 clinical = clinical[:][:, -3]
                 clinical2 = clinical2[:][:, -2]
+            elif 'sex-lesion_id' in self.clinical_mode:
+                clinical = clinical[:][:, -3]
+                clinical2 = clinical2[:][:, -1]
             elif 'eyeid-bcva-cst' == self.clinical_mode:
                 clinical = clinical[:][:, -4]
                 clinical2 = clinical2[:][:, -3]
@@ -282,13 +336,27 @@ class HyperFixMatch(AlgorithmBase):
             ex_clinical_ulb_w = clinical[num_lb:num_lb + num_ulb]
             ex_clinical_ulb_s0 = clinical[num_lb + num_ulb:num_lb + 2 * num_ulb]
             # 获取类别预测
-            pred_classes_ulb_w = (torch.sigmoid(logits_x_ulb_w) > 0.5).float()
-            pred_classes_ulb_s0 = (torch.sigmoid(logits_x_ulb_s_0) > 0.5).float()
-            # 构建超图 H1（针对 x_ulb_w）
-            H1, node_embeddings1 = construct_hypergraph(ex_clinical_ulb_w, pred_classes_ulb_w, feats_x_ulb_w)
-            # print(H1)
-            # 构建超图 H2（针对 x_ulb_s_0）
-            H2, node_embeddings2 = construct_hypergraph(ex_clinical_ulb_s0, pred_classes_ulb_s0, feats_x_ulb_s_0)
+            if self.args.loss == 'bce':
+                pred_classes_ulb_w = (torch.sigmoid(logits_x_ulb_w) > 0.5).float()
+                pred_classes_ulb_s0 = (torch.sigmoid(logits_x_ulb_s_0) > 0.5).float()
+                # 构建超图 H1（针对 x_ulb_w）
+                H1, node_embeddings1 = construct_hypergraph_multilabel(ex_clinical_ulb_w, pred_classes_ulb_w,
+                                                                       feats_x_ulb_w)
+                # print(H1)
+                # 构建超图 H2（针对 x_ulb_s_0）
+                H2, node_embeddings2 = construct_hypergraph_multilabel(ex_clinical_ulb_s0, pred_classes_ulb_s0,
+                                                                       feats_x_ulb_s_0)
+
+            else:
+                pred_classes_ulb_w = logits_x_ulb_w.argmax(dim=1)
+                pred_classes_ulb_s0 = logits_x_ulb_s_0.argmax(dim=1)
+                H1, node_embeddings1 = construct_hypergraph_single_label(ex_clinical_ulb_w, pred_classes_ulb_w,
+                                                                       feats_x_ulb_w)
+                # print(H1)
+                # 构建超图 H2（针对 x_ulb_s_0）
+                H2, node_embeddings2 = construct_hypergraph_single_label(ex_clinical_ulb_s0, pred_classes_ulb_s0,
+                                                                       feats_x_ulb_s_0)
+
             hyper_out = self.model.stage2_forward(node_embeddings1, H1,node_embeddings2,H2)
             hyper_weak_out,hyper_strong_out = hyper_out['hyper_logits'],hyper_out['hyper_logits2']
             # print(hyper_weak_out.shape,hyper_strong_out.shape)

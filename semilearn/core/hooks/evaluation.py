@@ -16,32 +16,25 @@ class EvaluationHook(Hook):
             algorithm.print_fn("validating...")
             eval_dict = algorithm.evaluate('eval')
             algorithm.log_dict.update(eval_dict)
-            if algorithm.args.loss == 'ce':
-                # update best metrics
-                if algorithm.log_dict['eval/top-1-acc'] > algorithm.best_eval_acc:
-                    algorithm.best_eval_acc = algorithm.log_dict['eval/top-1-acc']
-                    algorithm.best_it = algorithm.it
-            elif algorithm.args.loss == 'bce':
-                # if algorithm.log_dict['eval/mAP'] > algorithm.best_eval_mAP:
-                #     algorithm.best_eval_mAP = algorithm.log_dict['eval/mAP']
-                if algorithm.log_dict['eval/OF1'] > algorithm.best_eval_OF1:
-                    algorithm.best_eval_OF1 = algorithm.log_dict['eval/OF1']
 
-                    algorithm.best_it = algorithm.it
-                    algorithm.best_epoch = algorithm.epoch
+            # if algorithm.log_dict['eval/mAP'] > algorithm.best_eval_mAP:
+            #     algorithm.best_eval_mAP = algorithm.log_dict['eval/mAP']
+            if algorithm.log_dict['eval/AUC'] > algorithm.best_eval_OF1:
+                algorithm.best_eval_OF1 = algorithm.log_dict['eval/AUC']
+
+                algorithm.best_it = algorithm.it
+                algorithm.best_epoch = algorithm.epoch
+            else:
+                # algorithm.best_eval_mAP_patience += 1
+                if (algorithm.it > int(algorithm.num_train_iter * 0.6)):
+                    algorithm.best_eval_mAP_patience += 1 * algorithm.num_eval_iter
                 else:
+                    algorithm.best_eval_mAP_patience = 0
 
-                    # algorithm.best_eval_mAP_patience += 1
-
-                    if (algorithm.it > int(algorithm.num_train_iter * 0.6)):
-                        algorithm.best_eval_mAP_patience += 1
-                    else:
-                        algorithm.best_eval_mAP_patience = 0
-
-            if (algorithm.best_eval_mAP_patience > 30) and (algorithm.it > int(algorithm.num_train_iter * 0.6)):
-            # if (algorithm.best_eval_mAP_patience > 30):
-                print('Early stopping at iteration {}'.format(algorithm.it))
-                algorithm.it = 1000000000
+            # if (algorithm.best_eval_mAP_patience > int(algorithm.num_train_iter * 0.1)) and (algorithm.it > int(algorithm.num_train_iter * 0.6)):
+            # # if (algorithm.best_eval_mAP_patience > 30):
+            #     print('Early stopping at iteration {}'.format(algorithm.it))
+            #     algorithm.it = 1000000000
 
     
     def after_run(self, algorithm):

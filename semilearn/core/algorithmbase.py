@@ -11,7 +11,7 @@ from timm.scheduler.cosine_lr import CosineLRScheduler
 import torch
 import torch.nn.functional as F
 from torch.cuda.amp import autocast, GradScaler
-
+from semilearn.lighting.evaluator import Evaluator
 from semilearn.core.hooks import Hook, get_priority, CheckpointHook, TimerHook, LoggingHook, DistSamplerSeedHook, ParamUpdateHook, EvaluationHook, EMAHook, WANDBHook, AimHook
 from semilearn.core.utils import get_dataset, get_data_loader, get_optimizer, get_cosine_schedule_with_warmup, Bn_Controller
 from semilearn.core.criterions import CELoss, ConsistencyLoss
@@ -361,10 +361,12 @@ class AlgorithmBase:
 
                 logits = self.model(x)[out_key]
                 if self.args.loss == 'ce':
+                    if len(y.shape) > 1 and y.shape[1] > 1:
+                        y = torch.argmax(y, dim=1)
                     loss = F.cross_entropy(logits, y, reduction='mean', ignore_index=-1)
                     y_true.extend(y.cpu().tolist())
                     y_pred.extend(torch.max(logits, dim=-1)[1].cpu().tolist())
-                    y_logits.append(logits.cpu().numpy())
+                    y_logits.append(logits.cpu())
                     y_probs.extend(torch.softmax(logits, dim=-1).cpu().tolist())
                     total_loss += loss.item() * num_batch
                 elif self.args.loss == 'bce':
@@ -377,33 +379,28 @@ class AlgorithmBase:
                     # y_probs.extend(torch.sigmoid(logits).cpu().tolist())
                     total_loss += loss.item() * num_batch
         if self.args.loss == 'ce':
-            y_true = np.array(y_true)
-            y_pred = np.array(y_pred)
-            y_logits = np.concatenate(y_logits)
-            top1 = accuracy_score(y_true, y_pred)
-            top5 = top_k_accuracy_score(y_true, y_probs, k=5)
-            balanced_top1 = balanced_accuracy_score(y_true, y_pred)
-            precision = precision_score(y_true, y_pred, average='macro')
-            recall = recall_score(y_true, y_pred, average='macro')
-            F1 = f1_score(y_true, y_pred, average='macro')
+            # print(y_probs)
+            y_probs = [torch.tensor(output) for output in y_probs]
+            y_true = [torch.tensor(output) for output in y_true]
+            evaluator = Evaluator(self.num_classes,multilabel=False)
+            result_dict = evaluator.compute(y_probs, y_true)
 
-            cf_mat = confusion_matrix(y_true, y_pred, normalize='true')
-            self.print_fn('confusion matrix:\n' + np.array_str(cf_mat))
-            eval_dict = {eval_dest+'/loss': total_loss / total_num, eval_dest+'/top-1-acc': top1, eval_dest+'/top-5-acc': top5,
-                         eval_dest+'/balanced_acc': balanced_top1, eval_dest+'/precision': precision, eval_dest+'/recall': recall, eval_dest+'/F1': F1}
-        elif self.args.loss =='bce':
-            from semilearn.lighting.evaluator import Evaluator
-            evaluator = Evaluator(self.num_classes)
-            result_dict = evaluator.compute(y_logits, y_true)
-            # eval_dict = {eval_dest + '/loss': total_loss / total_num, eval_dest + '/mAP': result_dict['mAP'],
-            #              eval_dest + '/CF1': result_dict['CF1'],
-            #              eval_dest + '/OF1': result_dict['OF1'],
-            #              # "all_result":result_dict
-            #              }
             eval_dict = {eval_dest + '/loss': total_loss / total_num,
                          eval_dest + '/OF1': result_dict['OF1'],
                         eval_dest + '/AUC': result_dict['AUC'],
-                        eval_dest + '/AUPRC': result_dict['AUPRC'],
+                        eval_dest + '/ACC': result_dict['ACC'],
+                         }
+
+
+        elif self.args.loss =='bce':
+
+            evaluator = Evaluator(self.num_classes)
+            result_dict = evaluator.compute(y_logits, y_true)
+
+            eval_dict = {eval_dest + '/loss': total_loss / total_num,
+                         eval_dest + '/OF1': result_dict['OF1'],
+                        eval_dest + '/AUC': result_dict['AUC'],
+                        eval_dest + '/ACC': result_dict['ACC'],
                          }
 
         self.ema.restore()
@@ -452,6 +449,8 @@ class AlgorithmBase:
 
                 logits = self.model(x)[out_key]
                 if self.args.loss == 'ce':
+                    if len(y.shape) > 1 and y.shape[1] > 1:
+                        y = torch.argmax(y, dim=1)
                     y_true.extend(y.cpu().tolist())
                     y_pred.extend(torch.max(logits, dim=-1)[1].cpu().tolist())
                     y_logits.append(logits.cpu().numpy())
@@ -460,23 +459,18 @@ class AlgorithmBase:
                     y_logits.append(torch.sigmoid(logits).float())
                     y_true.append(y)
         if self.args.loss == 'ce':
-            y_true = np.array(y_true)
-            y_pred = np.array(y_pred)
-            y_logits = np.concatenate(y_logits)
-            top1 = accuracy_score(y_true, y_pred)
-            top5 = top_k_accuracy_score(y_true, y_probs, k=5)
-            balanced_top1 = balanced_accuracy_score(y_true, y_pred)
-            precision = precision_score(y_true, y_pred, average='macro')
-            recall = recall_score(y_true, y_pred, average='macro')
-            F1 = f1_score(y_true, y_pred, average='macro')
+            y_probs = [torch.tensor(output) for output in y_probs]
+            y_true = [torch.tensor(output) for output in y_true]
 
-            cf_mat = confusion_matrix(y_true, y_pred, normalize='true')
-            self.print_fn('confusion matrix:\n' + np.array_str(cf_mat))
-            eval_dict = {eval_dest+'/top-1-acc': top1, eval_dest+'/top-5-acc': top5,
-                         eval_dest+'/balanced_acc': balanced_top1, eval_dest+'/precision': precision, eval_dest+'/recall': recall, eval_dest+'/F1': F1}
+            evaluator = Evaluator(self.num_classes,multilabel=False)
+            result_dict = evaluator.compute(y_probs, y_true)
+            eval_dict = {
+                eval_dest + '/OF1': result_dict['OF1'],
+                eval_dest + '/AUC': result_dict['AUC'],
+                eval_dest + '/AUPRC': result_dict['AUPRC'],
+            }
         elif self.args.loss =='bce':
             if not only_logits:
-                from semilearn.lighting.evaluator import Evaluator
                 evaluator = Evaluator(self.num_classes)
                 result_dict = evaluator.compute(y_logits, y_true)
                 eval_dict = {

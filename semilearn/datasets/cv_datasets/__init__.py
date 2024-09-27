@@ -10,3 +10,5 @@ from .stl10 import get_stl10
 from .svhn import get_svhn
 from .food101 import get_food101
 from .olives import get_olives
+from .isic2018 import get_isic2018
+from .cxr8 import get_cxr8

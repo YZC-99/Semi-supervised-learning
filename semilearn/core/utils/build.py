@@ -7,6 +7,7 @@ import logging
 import random
 import torch
 import torch.distributed as dist
+from torch.utils.data import ConcatDataset
 from torch.utils.data import DataLoader
 from semilearn.datasets import get_collactor, name2sampler
 from semilearn.nets.utils import param_groups_layer_decay, param_groups_weight_decay
@@ -83,11 +84,17 @@ def get_dataset(args, algorithm, dataset, num_labels, num_classes, data_dir='./d
         include_lb_to_ulb: flag of including labeled data into unlabeled data
     """
     from semilearn.datasets import get_eurosat, get_medmnist, get_semi_aves, get_cifar, get_svhn, get_stl10, get_imagenet, get_json_dset, get_pkl_dset,get_olives
+    from semilearn.datasets import get_isic2018,get_cxr8
     if dataset == 'olives' or dataset == 'olives_5':
         lb_dset, ulb_dset, eval_dset,test_dset = get_olives(args, algorithm, num_labels, num_classes,include_lb_to_ulb=include_lb_to_ulb)
-    elif dataset == "eurosat":
-        lb_dset, ulb_dset, eval_dset = get_eurosat(args, algorithm, dataset, num_labels, num_classes, data_dir=data_dir, include_lb_to_ulb=include_lb_to_ulb)
-        test_dset = None
+    elif dataset == "isic2018":
+        lb_dset, ulb_dset, eval_dset, test_dset = get_isic2018(args, algorithm, num_labels, num_classes,
+                                                             include_lb_to_ulb=include_lb_to_ulb)
+    elif dataset == 'cxr8':
+        lb_dset, ulb_dset, eval_dset,test_dset = get_cxr8(args, algorithm, num_labels, num_classes,include_lb_to_ulb=include_lb_to_ulb)
+    # elif dataset == "isic2018":
+    #     lb_dset, ulb_dset, eval_dset = get_eurosat(args, algorithm, dataset, num_labels, num_classes, data_dir=data_dir, include_lb_to_ulb=include_lb_to_ulb)
+    #     test_dset = None
     elif dataset in ["tissuemnist"]:
         lb_dset, ulb_dset, eval_dset = get_medmnist(args, algorithm, dataset, num_labels, num_classes, data_dir=data_dir,  include_lb_to_ulb=include_lb_to_ulb)
         test_dset = None
@@ -125,14 +132,15 @@ def get_data_loader(args,
                     dset,
                     batch_size=None,
                     shuffle=False,
-                    num_workers=4,
+                    num_workers=8,
                     pin_memory=True,
                     data_sampler='RandomSampler',
                     num_epochs=None,
                     num_iters=None,
                     generator=None,
                     drop_last=True,
-                    distributed=False):
+                    distributed=False,
+                    lb_repeat_times=0):
     """
     get_data_loader returns torch.utils.data.DataLoader for a Dataset.
     All arguments are comparable with those of pytorch DataLoader.
@@ -162,6 +170,8 @@ def get_data_loader(args,
     collact_fn = get_collactor(args, args.net)
 
     if data_sampler is None:
+        if lb_repeat_times > 0:
+            dset = ConcatDataset([dset] * lb_repeat_times)
         return DataLoader(dset, batch_size=batch_size, shuffle=shuffle, collate_fn=collact_fn,
                           num_workers=num_workers, drop_last=drop_last, pin_memory=pin_memory)
 

@@ -18,27 +18,46 @@ warnings.filterwarnings("ignore")
 import argparse
 from seed import seed_everything
 from semilearn.datasets.cv_datasets.olives import OLIVESDataset
+from semilearn.datasets.cv_datasets.isic2018 import ISIC2018Dataset
 # all 7408
 # 0.05: 370
 parser = argparse.ArgumentParser(description="Semi-Supervised Learning (USB)")
-parser.add_argument("--algorithm", type=str, default="fixmatch")
 parser.add_argument("--save_name", type=str, default="/dk1/oct_exp/vit_small_patch16_224_patient/LP_fixmatch_SGD_extr1.0_uratio3_nlratio0.05_lr0.03_num_train_iter20000_bs96_seed42/")
-parser.add_argument("--net", type=str, default="vit_small_patch16_224")
+parser = argparse.ArgumentParser(description="Semi-Supervised Learning (USB)")
+parser.add_argument("--algorithm", type=str, default="fixmatch")
+parser.add_argument("--net", type=str, default="resnet50")
+parser.add_argument("--finetune_mode", type=str, default="",help="FT , PL, P1")
+parser.add_argument("--model_ckpt", type=str, default=None)
+parser.add_argument("--dataset", type=str, default='isic2018')
+parser.add_argument("--save_dir", type=str, default='oct_exp')
 parser.add_argument("--num_train_iter", type=int, default=12000)
 parser.add_argument("--num_eval_iter", type=int, default=117)
+parser.add_argument("--num_classes", type=int, default=7)
 parser.add_argument("--seed", type=int, default=42)
-parser.add_argument("--batch_size", type=int, default=1024)
+parser.add_argument("--num_workers", type=int, default=8)
+parser.add_argument("--batch_size", type=int, default=64)
 parser.add_argument("--device", type=int, default=1)
-parser.add_argument("--all_train_count", type=int, default=7408)
+parser.add_argument("--all_train_count", type=int, default=7010)
 parser.add_argument("--num_labels_ratio", type=float, default=0.05)
-parser.add_argument("--uratio", type=int, default=3)
+parser.add_argument("--num_labels_mode", type=str, default='ratio',help='N1,N2,N3')
+parser.add_argument("--uratio", type=int, default=7)
 parser.add_argument("--amp", type=bool, default=True)
 parser.add_argument("--optim", type=str, default='Adam')
+parser.add_argument("--loss", type=str, default='ce')
 parser.add_argument("--lr", type=float, default=0.0002)
 parser.add_argument("--exterrio", type=float, default=0.0)
-parser.add_argument("--clinical", type=bool, default=False)
+parser.add_argument("--clinical", type=str, default=None,help='simclr,eyeid,bcva,cst,patientid')
+parser.add_argument("--other", type=str, default='')
+parser.add_argument("--autodl", action='store_true',default=False)
 parser.add_argument("--epochs", type=int, default=1000000)
-parser.add_argument("--autodl", default=False, action='store_true')
+
+# llm finetune
+parser.add_argument("--vpt_shallow", action='store_true',default=False)
+parser.add_argument("--vpt_deep", action='store_true',default=False)
+parser.add_argument("--vpt_last", action='store_true',default=False)
+
+parser.add_argument("--vpt_len", type=int,default=50)
+
 
 columns = [
     "Atrophy / thinning of retinal layers",
@@ -149,7 +168,7 @@ def visual_biomarker_bar_on_dataset(csv_path, pred_path,save_path,exter=''):
 
 
 
-def get_ds(config,exter):
+def get_ds_olives(config,exter=False):
     csv_dir = '/home/gu721/yzc/Semi-supervised-learning/data/olives/'
     data_dir = "/home/gu721/yzc/data/ophthalmic_multimodal/OLIVES"
     imgnet_mean = (0, 0, 0)
@@ -169,13 +188,33 @@ def get_ds(config,exter):
         ds = OLIVESDataset('fullysupervised', exter_data, exter_targets, config.num_classes, transform_val, False, None,
                            False, is_test=True)
     else:
-        test_all_info = pd.read_csv(f"{csv_dir}train_dataset.csv")
+        test_all_info = pd.read_csv(f"{csv_dir}test_dataset.csv")
         test_all_info = test_all_info.fillna(0)
         test_data = test_all_info.iloc[:, 0].values
         test_data = [data_dir + i for i in test_data]
-        test_targets = test_all_info.iloc[:, 2:18].values
+        test_targets = test_all_info.iloc[:, 2:7].values
         ds = OLIVESDataset('fullysupervised', test_data, test_targets, config.num_classes, transform_val, False, None, False,is_test=True)
     return ds
+
+def get_ds_isic2018(config,exter=False):
+    csv_dir = f'/home/gu721/yzc/Semi-supervised-learning/data/ISIC2018/'
+    data_dir = f"/home/gu721/yzc/data/ISIC2018/images/"
+    imgnet_mean = (0, 0, 0)
+    imgnet_std = (1, 1, 1)
+    transform_val = transforms.Compose([
+        transforms.Resize(config.img_size),
+        transforms.ToTensor(),
+        transforms.Normalize(imgnet_mean, imgnet_std)
+    ])
+
+    test_all_info = pd.read_csv(f"{csv_dir}test_dataset.csv")
+    test_all_info = test_all_info.fillna(0)
+    test_data = test_all_info.iloc[:, 0].values
+    test_data = [data_dir + i +'.jpg' for i in test_data]
+    test_targets = test_all_info.iloc[:, 1:8].values
+    ds = ISIC2018Dataset('fullysupervised', test_data, test_targets, config.num_classes, transform_val, False, None, False,is_test=True)
+    return ds
+
 
 def refer_and_save_logits_bar(args,save_name,net,exter=False):
     num_labels = int(args.all_train_count * args.num_labels_ratio)
@@ -223,7 +262,7 @@ def refer_and_save_logits_bar(args,save_name,net,exter=False):
 
     algorithm = get_algorithm(config,  get_net_builder(config.net, from_name=False), tb_log=None, logger=None)
 
-    ds = get_ds(config,exter)
+    ds = get_ds_isic2018(config,exter)
 
 
     test_loader = get_data_loader(config, ds, config.eval_batch_size,data_sampler=None,drop_last=False,num_workers=16)
@@ -233,44 +272,124 @@ def refer_and_save_logits_bar(args,save_name,net,exter=False):
     algorithm.model.load_state_dict(torch.load(best_model_path)['model'])
     test_dict = algorithm.test('test',return_logits=True,only_logits=True)
 
-    save_path = os.path.join(save_name, 'exter1.0_train_logits.csv')
-    df = pd.DataFrame.from_dict(test_dict['test/logits_dict'], orient='index').reset_index()
-    # df.columns = ['name'] + ['logit_' + str(i) for i in range(len(df.columns) - 1)]  # 给列加上名称
-    df.columns = ['name'] + columns  # 给列加上名称
-    df.to_csv(save_path, index=False)
+    # save_path = os.path.join(save_name, 'exter1.0_train_logits.csv')
+    # df = pd.DataFrame.from_dict(test_dict['test/logits_dict'], orient='index').reset_index()
+    # df.columns = ['name'] + columns  # 给列加上名称
+    # df.to_csv(save_path, index=False)
     # train_label_path = "/home/gu721/yzc/Semi-supervised-learning/data/olives/train_dataset.csv"
-    train_label_path = "/home/gu721/yzc/Semi-supervised-learning/data/olives/train_dataset.csv"
+    # visual_biomarker_bar_on_dataset(train_label_path, save_path, save_name,exter='exter1.0')
 
 
-    visual_biomarker_bar_on_dataset(train_label_path, save_path, save_name,exter='exter1.0')
-    # visual_biomarker_bar_on_dataset_correct(train_label_path, save_path, save_name)
+def refer_on_test(args,save_name,net):
+    algorithm=args.algorithm
+    num_train_iter=args.num_train_iter
+    num_eval_iter = args.num_eval_iter
+    lr=args.lr
+    epochs=args.epochs
+    batch_size=args.batch_size
+    gpu=args.device
+    amp=args.amp
+    optim=args.optim
+    uratio=args.uratio
+    exterrio=args.exterrio
+    other=args.other
+    num_labels = int(args.all_train_count * args.num_labels_ratio)
+    ulb_num_labels = args.all_train_count - num_labels
+    config = {
+        'algorithm': algorithm,
+        'save_name': save_name,
+        'net': args.net,
+        'use_pretrain': True,  # todo: add pretrain
+        # training
+        'epoch': epochs,
+        'amp': amp,
+        'num_eval_iter': num_eval_iter,
+        'num_train_iter': num_train_iter,
+        'save_dir': args.save_dir,
+        'exterrio': exterrio,
+        'clinical': args.clinical,
+        # optimization configs
+        'optim': optim,
+        'lr': lr,
+        'momentum': 0.9,
+        'batch_size': batch_size,
+        'eval_batch_size': 128,
+        # dataset configs
+        'dataset': args.dataset,
+        'num_labels': num_labels,
+        'num_labels_mode': args.num_labels_mode,
+        'ulb_num_labels': ulb_num_labels,
+        'num_classes': args.num_classes,
+        'img_size': 224,
+        'data_dir': './data',
 
+        # algorithm specific configs
+        'hard_label': True,
+        'uratio': uratio,
+        'ulb_loss_ratio': 1.0,
+        'loss': args.loss,
+
+        # device configs
+        'gpu': gpu,
+        'world_size': 1,
+        'distributed': False,
+        'autodl': args.autodl,
+    }
+    config = get_config(config)
+
+    algorithm = get_algorithm(config,  get_net_builder(config.net, from_name=False), tb_log=None, logger=None)
+
+    ds = get_ds_isic2018(config)
+
+
+    test_loader = get_data_loader(config, ds, config.eval_batch_size,data_sampler=None,drop_last=False,num_workers=16)
+
+    algorithm.loader_dict['test'] = test_loader
+    best_model_path = os.path.join(save_name, 'model_best.pth')
+    weight_dict = torch.load(best_model_path)['model']
+    # 去除backbone这个前缀
+    new_weight_dict = {}
+    for k, v in weight_dict.items():
+        if k.startswith('backbone.'):
+            new_weight_dict[k[9:]] = v
+        else:
+            new_weight_dict[k] = v
+    algorithm.model.load_state_dict(new_weight_dict, strict=False)
+    test_dict = algorithm.test('test',return_logits=False,only_logits=False)
+    return test_dict
 
 if __name__ == '__main__':
     args = parser.parse_args()
     seed_everything(args.seed)
-    net='vit_small_patch16_224'
-    exter = True
+    net='resnet50'
+
+    dir_path = "/dk1/isic2018-exp/resnet50_None/"
+
+    save_name_list = []
+    for root, dirs, files in os.walk(dir_path):
+        # 如果files包含test_logits.csv
+        if 'model_best.pth' in files:
+            save_name_list.append(root)
+    for save_name in save_name_list:
+
+        # save_name = "/dk1/isic2018-exp/resnet50_None/comatch___ratio_SGD_extr0.0_uratio7_nlratio0.05_lr0.01_num_train_iter20000_bs80_seed42/"
+        test_dict = refer_on_test(args,save_name,net)
+        df = pd.DataFrame.from_dict(test_dict['test/logits_dict'], orient='index').reset_index()
+        df.columns = ['name'] + ['logit_' + str(i) for i in range(len(df.columns) - 1)]  # 给列加上名称
+        save_path = os.path.join(save_name, 'test_logits.csv')
+        df.to_csv(save_path, index=False)
+
 
     # save_name_list = [
-    #     "/dk1/oct-exp-v1/vit_small_patch16_224_/FT_fixmatch_AdamW_extr0.0_uratio3_nlratio0.05_lr8e-05_num_train_iter20000_bs48_seed42/",
-    #     "/dk1/oct-exp-v1/vit_small_patch16_224_SimCLR/FT_fixmatch_AdamW_extr0.0_uratio3_nlratio0.05_lr8e-05_num_train_iter20000_bs48_seed42/",
-    #     "/dk1/oct-exp-v1/vit_small_patch16_224_patient/FT_fixmatch_AdamW_extr0.0_uratio3_nlratio0.05_lr8e-05_num_train_iter20000_bs48_seed42/",
-    #     "/dk1/oct-exp-v1/vit_small_patch16_224_eye_id/FT_fixmatch_AdamW_extr0.0_uratio3_nlratio0.05_lr8e-05_num_train_iter20000_bs48_seed42/",
-    #     "/dk1/oct-exp-v1/vit_small_patch16_224_cst/FT_fixmatch_AdamW_extr0.0_uratio3_nlratio0.05_lr8e-05_num_train_iter20000_bs48_seed42/",
-    #     "/dk1/oct-exp-v1/vit_small_patch16_224_bcva/FT_fixmatch_AdamW_extr0.0_uratio3_nlratio0.05_lr8e-05_num_train_iter20000_bs48_seed42/",
+    #     "/dk1/oct-exp-v1/vit_small_patch16_224_/_fixmatch_AdamW_extr1.0_uratio3_nlratio0.05_lr8e-05_num_train_iter20000_bs48_seed42/",
+    #     "/dk1/oct-exp-v1/vit_small_patch16_224_SimCLR/FT_fixmatch_AdamW_extr1.0_uratio3_nlratio0.05_lr8e-05_num_train_iter20000_bs48_seed42/",
+    #     "/dk1/oct-exp-v1/vit_small_patch16_224_patient/FT_fixmatch_AdamW_extr1.0_uratio3_nlratio0.05_lr8e-05_num_train_iter20000_bs48_seed42/",
+    #     "/dk1/oct-exp-v1/vit_small_patch16_224_eye_id/FT_fixmatch_AdamW_extr1.0_uratio3_nlratio0.05_lr8e-05_num_train_iter20000_bs48_seed42/",
+    #     "/dk1/oct-exp-v1/vit_small_patch16_224_cst/FT_fixmatch_AdamW_extr1.0_uratio3_nlratio0.05_lr8e-05_num_train_iter20000_bs48_seed42/",
+    #     "/dk1/oct-exp-v1/vit_small_patch16_224_bcva/FT_fixmatch_AdamW_extr1.0_uratio3_nlratio0.05_lr8e-05_num_train_iter20000_bs48_seed42/",
     # ]
 
-    save_name_list = [
-        "/dk1/oct-exp-v1/vit_small_patch16_224_/_fixmatch_AdamW_extr1.0_uratio3_nlratio0.05_lr8e-05_num_train_iter20000_bs48_seed42/",
-        "/dk1/oct-exp-v1/vit_small_patch16_224_SimCLR/FT_fixmatch_AdamW_extr1.0_uratio3_nlratio0.05_lr8e-05_num_train_iter20000_bs48_seed42/",
-        "/dk1/oct-exp-v1/vit_small_patch16_224_patient/FT_fixmatch_AdamW_extr1.0_uratio3_nlratio0.05_lr8e-05_num_train_iter20000_bs48_seed42/",
-        "/dk1/oct-exp-v1/vit_small_patch16_224_eye_id/FT_fixmatch_AdamW_extr1.0_uratio3_nlratio0.05_lr8e-05_num_train_iter20000_bs48_seed42/",
-        "/dk1/oct-exp-v1/vit_small_patch16_224_cst/FT_fixmatch_AdamW_extr1.0_uratio3_nlratio0.05_lr8e-05_num_train_iter20000_bs48_seed42/",
-        "/dk1/oct-exp-v1/vit_small_patch16_224_bcva/FT_fixmatch_AdamW_extr1.0_uratio3_nlratio0.05_lr8e-05_num_train_iter20000_bs48_seed42/",
-    ]
 
-
-    for save_name in save_name_list:
-        refer_and_save_logits_bar(args,save_name,net,exter)
+    # for save_name in save_name_list:
+    #     refer_and_save_logits_bar(args,save_name,net,exter)
 

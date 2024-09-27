@@ -19,19 +19,23 @@ parser.add_argument("--net", type=str, default="resnet50")
 parser.add_argument("--finetune_mode", type=str, default="",help="FT , PL, P1")
 parser.add_argument("--model_ckpt", type=str, default=None)
 parser.add_argument("--dataset", type=str, default='olives')
+parser.add_argument("--save_dir", type=str, default='oct_exp')
 parser.add_argument("--num_train_iter", type=int, default=12000)
+parser.add_argument("--num_warmup_iter", type=int, default=0.0)
 parser.add_argument("--num_eval_iter", type=int, default=117)
 parser.add_argument("--num_classes", type=int, default=16)
 parser.add_argument("--seed", type=int, default=42)
+parser.add_argument("--num_workers", type=int, default=8)
 parser.add_argument("--batch_size", type=int, default=64)
 parser.add_argument("--device", type=int, default=1)
 parser.add_argument("--all_train_count", type=int, default=7408)
 parser.add_argument("--num_labels_ratio", type=float, default=0.05)
 parser.add_argument("--num_labels_mode", type=str, default='ratio',help='N1,N2,N3')
-parser.add_argument("--uratio", type=int, default=7)
+parser.add_argument("--uratio", type=int, default=3)
 parser.add_argument("--amp", type=bool, default=True)
 parser.add_argument("--optim", type=str, default='Adam')
-parser.add_argument("--lr", type=float, default=0.0002)
+parser.add_argument("--loss", type=str, default='bce')
+parser.add_argument("--lr", type=float, default=0.001)
 parser.add_argument("--exterrio", type=float, default=0.0)
 parser.add_argument("--clinical", type=str, default=None,help='simclr,eyeid,bcva,cst,patientid')
 parser.add_argument("--other", type=str, default='')
@@ -83,7 +87,8 @@ if __name__ == '__main__':
         'amp': amp,
         'num_eval_iter': num_eval_iter,
         'num_train_iter': num_train_iter,
-        'save_dir': 'oct_exp',
+        'num_warmup_iter': int(args.num_warmup_iter * args.num_train_iter),
+        'save_dir': args.save_dir,
         'exterrio':exterrio,
         'clinical':args.clinical,
         # optimization configs
@@ -105,7 +110,7 @@ if __name__ == '__main__':
         'hard_label': True,
         'uratio': uratio,
         'ulb_loss_ratio': 1.0,
-        'loss': 'bce',
+        'loss': args.loss,
 
         # device configs
         'gpu': gpu,
@@ -126,6 +131,8 @@ if __name__ == '__main__':
 
     lb_loader_length = len(dataset_dict['train_lb']) // config.batch_size
     ulb_loader_length = len(dataset_dict['train_ulb']) // int(config.batch_size * config.uratio)
+
+    lb_repeat_times = len(dataset_dict['train_ulb']) // len(dataset_dict['train_lb'])
     # 这种分为俩种情况，一种是有标签数据多，一种是无标签数据多。
     #1、有标签loader的长度大于无标签loader的长度，那么共同训练得时候loader得结束是以短得为准，因此要对长得数据进行无放回采样
     #2、无标签loader的长度大于有标签loader的长度，那么共同训练得时候loader得结束是以短得为准，因此要对长得数据进行有放回采样
@@ -152,11 +159,11 @@ if __name__ == '__main__':
 
     # create data loader for unlabeled training set
     train_ulb_loader = get_data_loader(config, dataset_dict['train_ulb'], ulb_bs,
-                                       data_sampler=ulb_sampler,num_workers=8,drop_last=True,shuffle= True if ulb_sampler is None else False)
+                                       data_sampler=ulb_sampler,num_workers=args.num_workers,drop_last=True,shuffle= True if ulb_sampler is None else False)
 
     # create data loader for labeled training set
     train_lb_loader = get_data_loader(config, dataset_dict['train_lb'], lb_bs,
-                                      data_sampler=lb_sampler,num_workers=8, pin_memory=True,drop_last=True, shuffle=True if lb_sampler is None else False)
+                                      data_sampler=lb_sampler,num_workers=args.num_workers, pin_memory=True,drop_last=True, shuffle=True,lb_repeat_times=lb_repeat_times)
 
     # create data loader for evaluation
     eval_loader = get_data_loader(config, dataset_dict['eval'], config.eval_batch_size,data_sampler=None,drop_last=False)
