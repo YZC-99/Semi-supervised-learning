@@ -21,11 +21,9 @@ from semilearn.datasets.multilabel_utils import split_ssl_multilabel_data,split_
 def get_isic2018(args, alg,num_labels, num_classes,include_lb_to_ulb=False):
 
     class_folder = 'ISIC2018'
-    if args.num_classes == 5:
-        class_folder = 'olives_5'
     if args.autodl:
         csv_dir = f'/root/Semi-supervised-learning/data/{class_folder}/'
-        data_dir = f"/root/autodl-tmp/OLIVES"
+        data_dir = f"/root/autodl-tmp/ISIC2018/images/"
     else:
         csv_dir = f'/home/gu721/yzc/Semi-supervised-learning/data/{class_folder}/'
         data_dir = f"/home/gu721/yzc/data/ISIC2018/images/"
