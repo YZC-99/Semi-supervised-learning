@@ -9,12 +9,14 @@ from collections import OrderedDict
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, top_k_accuracy_score
 from timm.scheduler.cosine_lr import CosineLRScheduler
 import torch
+import pandas as pd
 import torch.nn.functional as F
 from torch.cuda.amp import autocast, GradScaler
 from semilearn.lighting.evaluator import Evaluator
 from semilearn.core.hooks import Hook, get_priority, CheckpointHook, TimerHook, LoggingHook, DistSamplerSeedHook, ParamUpdateHook, EvaluationHook, EMAHook, WANDBHook, AimHook
 from semilearn.core.utils import get_dataset, get_data_loader, get_optimizer, get_cosine_schedule_with_warmup, Bn_Controller
 from semilearn.core.criterions import CELoss, ConsistencyLoss
+from semilearn.lighting.compute_metircs import compute_metrics
 from torch.nn.functional import binary_cross_entropy_with_logits
 
 class AlgorithmBase:
@@ -325,96 +327,112 @@ class AlgorithmBase:
         self.call_hook("after_run")
 
 
-    def evaluate(self, eval_dest='eval', out_key='logits', return_logits=False):
-        """
-        evaluation function
-        """
-        self.model.eval()
-        self.ema.apply_shadow()
-
-        eval_loader = self.loader_dict[eval_dest]
-        total_loss = 0.0
-        total_num = 0.0
-        all_idx = []
-        all_image_path = []
-        y_true = []
-        y_pred = []
-        y_probs = []
-        y_logits = []
-        with torch.no_grad():
-            for data in eval_loader:
-                all_idx.append(data['idx_lb'])
-                x = data['x_lb']
-                y = data['y_lb']
-                if eval_dest == 'test':
-                    image_path = data['image_path']
-                    all_image_path.append(image_path)
-
-                if isinstance(x, dict):
-                    x = {k: v.cuda(self.gpu) for k, v in x.items()}
-                else:
-                    x = x.cuda(self.gpu)
-                y = y.cuda(self.gpu)
-
-                num_batch = y.shape[0]
-                total_num += num_batch
-
-                logits = self.model(x)[out_key]
-                if self.args.loss == 'ce':
-                    if len(y.shape) > 1 and y.shape[1] > 1:
-                        y = torch.argmax(y, dim=1)
-                    loss = F.cross_entropy(logits, y, reduction='mean', ignore_index=-1)
-                    y_true.extend(y.cpu().tolist())
-                    y_pred.extend(torch.max(logits, dim=-1)[1].cpu().tolist())
-                    y_logits.append(logits.cpu())
-                    y_probs.extend(torch.softmax(logits, dim=-1).cpu().tolist())
-                    total_loss += loss.item() * num_batch
-                elif self.args.loss == 'bce':
-                    loss = F.binary_cross_entropy_with_logits(logits, y)
-                    y_logits.append(torch.sigmoid(logits).float())
-                    y_true.append(y)
-                    # y_true.extend(y.cpu().tolist())
-                    # y_pred.extend((torch.sigmoid(logits) > 0.5).cpu().int().tolist())
-                    # y_logits.append(torch.sigmoid(logits))
-                    # y_probs.extend(torch.sigmoid(logits).cpu().tolist())
-                    total_loss += loss.item() * num_batch
-        if self.args.loss == 'ce':
-            # print(y_probs)
-            y_probs = [torch.tensor(output) for output in y_probs]
-            y_true = [torch.tensor(output) for output in y_true]
-            evaluator = Evaluator(self.num_classes,multilabel=False)
-            result_dict = evaluator.compute(y_probs, y_true)
-
-            eval_dict = {eval_dest + '/loss': total_loss / total_num,
-                         eval_dest + '/OF1': result_dict['OF1'],
-                        eval_dest + '/AUC': result_dict['AUC'],
-                        eval_dest + '/ACC': result_dict['ACC'],
-                         }
-
-
-        elif self.args.loss =='bce':
-
-            evaluator = Evaluator(self.num_classes)
-            result_dict = evaluator.compute(y_logits, y_true)
-
-            eval_dict = {eval_dest + '/loss': total_loss / total_num,
-                         eval_dest + '/OF1': result_dict['OF1'],
-                        eval_dest + '/AUC': result_dict['AUC'],
-                        eval_dest + '/ACC': result_dict['ACC'],
-                         }
-
-        self.ema.restore()
-        self.model.train()
-
-        if return_logits:
-            eval_dict[eval_dest+'/logits'] = y_logits
-        if eval_dest == 'test':
-            logits_dict = {}
-            for i, minibatch in enumerate(all_image_path):
-                for j in range(len(minibatch)):
-                    logits_dict[minibatch[j]] = y_logits[i][j].tolist()
-            eval_dict[eval_dest+'/logits_dict'] = logits_dict
-        return eval_dict
+    # def evaluate(self, eval_dest='eval', out_key='logits', return_logits=False):
+    #     """
+    #     evaluation function
+    #     """
+    #     self.model.eval()
+    #
+    #     # self.ema.apply_shadow()
+    #
+    #     eval_loader = self.loader_dict[eval_dest]
+    #     total_loss = 0.0
+    #     total_num = 0.0
+    #     all_idx = []
+    #     all_image_path = []
+    #     y_true = []
+    #     y_pred = []
+    #     y_probs = []
+    #     y_logits = []
+    #     with torch.no_grad():
+    #         for data in eval_loader:
+    #             all_idx.append(data['idx_lb'])
+    #             x = data['x_lb']
+    #             y = data['y_lb']
+    #             if eval_dest == 'test':
+    #                 image_path = data['image_path']
+    #                 all_image_path.append(image_path)
+    #
+    #             if isinstance(x, dict):
+    #                 x = {k: v.cuda(self.gpu) for k, v in x.items()}
+    #             else:
+    #                 x = x.cuda(self.gpu)
+    #             y = y.cuda(self.gpu)
+    #
+    #             num_batch = y.shape[0]
+    #             total_num += num_batch
+    #
+    #             logits = self.model(x)[out_key]
+    #             if self.args.loss == 'ce':
+    #                 if len(y.shape) > 1 and y.shape[1] > 1:
+    #                     y = torch.argmax(y, dim=1)
+    #                 loss = F.cross_entropy(logits, y, reduction='mean', ignore_index=-1)
+    #                 y_true.append(y.cpu())
+    #                 y_probs.append(torch.softmax(logits, dim=-1).cpu())
+    #                 total_loss += loss.item() * num_batch
+    #             elif self.args.loss == 'bce':
+    #                 loss = F.binary_cross_entropy_with_logits(logits, y)
+    #                 y_logits.append(torch.sigmoid(logits).float())
+    #                 y_true.append(y)
+    #                 # y_true.extend(y.cpu().tolist())
+    #                 # y_pred.extend((torch.sigmoid(logits) > 0.5).cpu().int().tolist())
+    #                 # y_logits.append(torch.sigmoid(logits))
+    #                 # y_probs.extend(torch.sigmoid(logits).cpu().tolist())
+    #                 total_loss += loss.item() * num_batch
+    #     if self.args.loss == 'ce':
+    #         y_probs = torch.cat(y_probs)
+    #         y_true = torch.cat(y_true)
+    #         evaluator = Evaluator(self.num_classes,multilabel=False)
+    #         result_dict = evaluator.compute(y_probs, y_true)
+    #
+    #
+    #
+    #         eval_dict = {eval_dest + '/loss': total_loss / total_num,
+    #                      eval_dest + '/OF1': result_dict['OF1'],
+    #                     eval_dest + '/AUC': result_dict['AUC'],
+    #                     eval_dest + '/ACC': result_dict['ACC'],
+    #                     eval_dest + '/SENS': result_dict['SENS'],
+    #                     eval_dest + '/SPEC': result_dict['SPEC'],
+    #                      }
+    #
+    #
+    #     elif self.args.loss =='bce':
+    #
+    #         evaluator = Evaluator(self.num_classes)
+    #         result_dict = evaluator.compute(y_logits, y_true)
+    #
+    #         eval_dict = {eval_dest + '/loss': total_loss / total_num,
+    #                      eval_dest + '/OF1': result_dict['OF1'],
+    #                     eval_dest + '/AUC': result_dict['AUC'],
+    #                     eval_dest + '/ACC': result_dict['ACC'],
+    #                     eval_dest + '/SENS': result_dict['SENS'],
+    #                     eval_dest + '/SPEC': result_dict['SPEC'],
+    #                      }
+    #
+    #     # self.ema.restore()
+    #     self.model.train()
+    #
+    #     # if return_logits:
+    #     #     eval_dict[eval_dest+'/logits'] = y_logits
+    #     # if eval_dest == 'test':
+    #     #     logits_dict = {}
+    #     #     for i, minibatch in enumerate(all_image_path):
+    #     #         for j in range(len(minibatch)):
+    #     #             logits_dict[minibatch[j]] = y_logits[i][j].tolist()
+    #     #     eval_dict[eval_dest+'/logits_dict'] = logits_dict
+    #
+    #
+    #     if return_logits:
+    #         eval_dict[eval_dest+'/logits'] = y_logits
+    #     if eval_dest == 'test':
+    #         logits_dict = {}
+    #         for i, minibatch in enumerate(all_image_path):
+    #             for j in range(len(minibatch)):
+    #                 logits_dict[minibatch[j]] = y_logits[i][j].tolist()
+    #         eval_dict[eval_dest+'/logits_dict'] = logits_dict
+    #
+    #
+    #     return eval_dict
 
     def test(self, eval_dest='test', out_key='logits', return_logits=False,only_logits=False):
 
@@ -434,49 +452,45 @@ class AlgorithmBase:
                 all_idx.append(data['idx_lb'])
                 x = data['x_lb']
                 y = data['y_lb']
-                if eval_dest == 'test':
-                    image_path = data['image_path']
-                    all_image_path.append(image_path)
+                image_path = data['image_path']
+                all_image_path.append(image_path)
 
                 if isinstance(x, dict):
                     x = {k: v.cuda(self.gpu) for k, v in x.items()}
                 else:
                     x = x.cuda(self.gpu)
-                y = y.cuda(self.gpu)
-
-                num_batch = y.shape[0]
-                total_num += num_batch
 
                 logits = self.model(x)[out_key]
                 if self.args.loss == 'ce':
-                    if len(y.shape) > 1 and y.shape[1] > 1:
-                        y = torch.argmax(y, dim=1)
-                    y_true.extend(y.cpu().tolist())
-                    y_pred.extend(torch.max(logits, dim=-1)[1].cpu().tolist())
+                    y_true.append(torch.argmax(y, dim=1))
                     y_logits.append(logits.cpu().numpy())
-                    y_probs.extend(torch.softmax(logits, dim=-1).cpu().tolist())
+                    y_probs.append(torch.softmax(logits, dim=-1).cpu())
                 elif self.args.loss == 'bce':
                     y_logits.append(torch.sigmoid(logits).float())
                     y_true.append(y)
         if self.args.loss == 'ce':
-            y_probs = [torch.tensor(output) for output in y_probs]
-            y_true = [torch.tensor(output) for output in y_true]
+            y_probs = torch.cat(y_probs).numpy()
+            y_true = torch.cat(y_true).numpy()
+            result_dict = compute_metrics(y_true,y_probs, self.num_classes)
 
-            evaluator = Evaluator(self.num_classes,multilabel=False)
-            result_dict = evaluator.compute(y_probs, y_true)
             eval_dict = {
-                eval_dest + '/OF1': result_dict['OF1'],
-                eval_dest + '/AUC': result_dict['AUC'],
-                eval_dest + '/AUPRC': result_dict['AUPRC'],
-            }
+                        eval_dest + '/F1': result_dict['F1'],
+                        eval_dest + '/AUC': result_dict['AUC'],
+                        eval_dest + '/ACC': result_dict['ACC'],
+                        eval_dest + '/SENS': result_dict['SENS'],
+                        eval_dest + '/SPEC': result_dict['SPEC'],
+                         }
+
         elif self.args.loss =='bce':
             if not only_logits:
                 evaluator = Evaluator(self.num_classes)
                 result_dict = evaluator.compute(y_logits, y_true)
                 eval_dict = {
-                             eval_dest + '/OF1': result_dict['OF1'],
+                             eval_dest + '/F1': result_dict['OF1'],
                              eval_dest + '/AUC': result_dict['AUC'],
-                             eval_dest + '/AUPRC': result_dict['AUPRC'],
+                             eval_dest + '/ACC': result_dict['ACC'],
+                             eval_dest + '/SENS': result_dict['SENS'],
+                             eval_dest + '/SPEC': result_dict['SPEC'],
                              }
 
         if return_logits:

@@ -23,14 +23,8 @@ class Evaluator(object):
         self.labels = []
 
     def compute_single_label(self,outputs,labels):
-        # 因为传入进来的是一个列表
-        probs = torch.cat([torch.softmax(output, dim=-1).unsqueeze(0) for output in outputs], dim=0)  # [N, num_classes]
-        labels = torch.cat(
-            [label.view(-1) if torch.is_tensor(label) else torch.tensor([label]) for label in labels], dim=0) # [N,]
-        labels = labels.view(-1,1)  # (N,1)
-        # preds = torch.argmax(probs, dim=-1)  # [N,]
+        probs = outputs
         THRESH = 0.18
-
         AUROCs, Accs, Senss, Recas, Specs, F1s = [], [], [], [], [], []
         for i in range(self.num_classes):
             try:
@@ -61,13 +55,15 @@ class Evaluator(object):
         acc = np.mean(Accs) * 100
         auc = np.mean(AUROCs) * 100
         F1 = np.mean(F1s) * 100
-
-
+        sens = np.mean(Senss) * 100
+        spec = np.mean(Specs) * 100
         return {
             'ACC': acc,
             'OF1': F1,
             'CF1': F1,
             'AUC': auc,
+            'SENS': sens,
+            'SPEC': spec,
             'AUPRC': auc,
         }
 
@@ -104,11 +100,15 @@ class Evaluator(object):
         acc = np.mean(Accs) * 100
         auc = np.mean(AUROCs) * 100
         F1 = np.mean(F1s) * 100
+        sens = np.mean(Senss) * 100
+        spec = np.mean(Specs) * 100
         return {
             'ACC': acc,
             'OF1': F1,
             'CF1': F1,
             'AUC': auc,
+            'SENS': sens,
+            'SPEC': spec,
             'AUPRC': auc,
         }
 

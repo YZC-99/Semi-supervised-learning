@@ -64,7 +64,7 @@ def _handle_errors(errors):
 
 ALL_MODULES = [
     # NOTE: add all algorithms here
-    ('semilearn.algorithms', ['hyperplusfixmatch','hyperfixmatch','comatch_wo_graph','comatch_wo_memory','hypercomatch','conmatch','clinfixmatch','clinfixdamatch','adamatch', 'comatch', 'crmatch', 'dash', 'fixmatch','fixdamatch', 'flexmatch', 'fullysupervised', 'meanteacher',
+    ('semilearn.algorithms', ['hyperplusfixmatchv3','pefat','hyperplusfixmatchv2','hyperplusfixmatch','hyperfixmatch','comatch_wo_graph','comatch_wo_memory','hypercomatch','conmatch','clinfixmatch','clinfixdamatch','adamatch', 'comatch', 'crmatch', 'dash', 'fixmatch','fixdamatch', 'flexmatch', 'fullysupervised', 'meanteacher',
                               'mixmatch', 'pimodel', 'pseudolabel', 'remixmatch', 'simmatch', 'uda', 'vat', 'softmatch', 'freematch',
                               'sequencematch', 'refixmatch']),
     ('semilearn.imb_algorithms', ['abc', 'cossl', 'adsh', 'crest', 'darp', 'daso', 'debiaspl', 'saw', 'tras'])

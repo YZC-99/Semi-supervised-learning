@@ -5,15 +5,71 @@ import torch.nn as nn
 import torch.nn.functional as F
 from semilearn.core.algorithmbase import AlgorithmBase
 from semilearn.core.utils import ALGORITHMS
-from semilearn.algorithms.hooks import PseudoLabelingHook, FixedThresholdingHook,DistAlignQueueHook
+from semilearn.algorithms.hooks import PseudoLabelingHook, FixedThresholdingHook, DistAlignQueueHook
 from semilearn.algorithms.utils import SSL_Argument, str2bool
 from semilearn.loss.supconloss import SupConLoss
+from sklearn.mixture import GaussianMixture
 
-def KL(out1,out2,eps=1e-5):
+from sklearn.mixture import GaussianMixture
+import torch
+import torch.nn.functional as F
+import numpy as np
+
+def fit_gmm_on_DDL(DDL, n_components=5):
+    """
+    使用GMM对DDL进行建模。
+
+    Args:
+        DDL: [num_classes, num_classes] 分布差异矩阵
+        n_components: int GMM的混合成分数
+
+    Returns:
+        gmm: 训练好的GaussianMixture模型
+    """
+    DDL_flat = DDL.view(-1).cpu().detach().numpy().reshape(-1, 1)  # [num_classes * num_classes, 1]
+    gmm = GaussianMixture(n_components=n_components, covariance_type='full', random_state=42)
+    gmm.fit(DDL_flat)
+    return gmm
+
+def compute_DDU_likelihood(gmm, DDU):
+    """
+    计算未标记样本的DDU在GMM模型下的似然概率。
+
+    Args:
+        gmm: 训练好的GaussianMixture模型
+        DDU: [num_ulb, num_classes] 未标记数据的分布差异
+
+    Returns:
+        likelihoods: [num_ulb] 每个未标记样本的总似然概率
+    """
+    num_ulb = DDU.size(0)
+    # 假设 DDU 是 [num_ulb, num_classes]
+    # 需要将其展平为与DDL相同的维度
+    DDU_flat = DDU.view(num_ulb, -1).cpu().detach().numpy()  # [num_ulb, num_classes * num_classes]
+    log_probs = gmm.score_samples(DDU_flat)  # [num_ulb]
+    likelihoods = np.exp(log_probs)  # 转换为概率
+    return torch.tensor(likelihoods, device=DDU.device)
+
+def select_high_confidence_samples(likelihoods, threshold=0.95):
+    """
+    选择高可信度的未标记样本，并返回与原始形状相同的掩码。
+
+    Args:
+        likelihoods (torch.Tensor): [num_ulb] 每个未标记样本的似然概率
+        threshold (float): 置信度阈值
+
+    Returns:
+        mask (torch.Tensor): [num_ulb] 选择的未标记样本掩码，符合条件的为1，否则为0
+    """
+    mask = (likelihoods > threshold).float()
+    return mask
+
+def KL(out1, out2, eps=1e-5):
     kl = (out1 * (out1 + eps).log() - out1 * (out2 + eps).log()).sum(dim=1)
     kl = kl.mean()
     torch.distributed.all_reduce(kl)
     return kl
+
 
 def construct_hypergraph_multilabel(ex_clinical, pred_classes, feats):
     """
@@ -52,7 +108,7 @@ def construct_hypergraph_multilabel(ex_clinical, pred_classes, feats):
     # 获取 pred_classes 中值为 1 的索引
     indices = torch.nonzero(pred_classes)  # [K, 2], K 是值为 1 的元素个数
     sample_indices = indices[:, 0]  # [K]
-    class_indices = indices[:, 1]   # [K]
+    class_indices = indices[:, 1]  # [K]
 
     # 获取对应的节点索引
     node_indices_for_samples = node_indices[sample_indices]  # [K]
@@ -62,6 +118,7 @@ def construct_hypergraph_multilabel(ex_clinical, pred_classes, feats):
     H[node_indices_for_samples, class_indices] = 1  # 设置关联矩阵中的值为 1
 
     return H, node_features
+
 
 def construct_hypergraph_single_label(ex_clinical, pred_classes, feats):
     """
@@ -131,6 +188,7 @@ def construct_hypergraph_single_label(ex_clinical, pred_classes, feats):
 
     return H, node_features, node_indices_map
 
+
 def construct_hypergraph_single_label_whole(ex_clinical, pred_classes, feats):
     """
     构建超图 H 和对应的节点嵌入（单标签分类），每个样本都是一个节点。
@@ -185,6 +243,122 @@ def construct_hypergraph_single_label_whole(ex_clinical, pred_classes, feats):
     return H, node_features, node_indices_map
 
 
+def construct_hypergraph(ex_clinical, num_lb):
+    """
+    构建超图 H，包括已标记和未标记数据。
+
+    Args:
+        ex_clinical: [N]，每个样本的 ex_clinical 值（已标记和未标记）
+        num_lb: int，已标记数据的数量
+
+    Returns:
+        H: [N, num_hyperedges]，超图的关联矩阵
+    """
+    N = ex_clinical.size(0)
+    device = ex_clinical.device
+
+    # 构建基于临床标签的超边
+    unique_ex_clinical, inverse_indices = torch.unique(ex_clinical, sorted=True, return_inverse=True)
+    num_ex_clinical = unique_ex_clinical.size(0)
+
+    # 构建关联矩阵 H，形状为 [N, num_hyperedges]
+    H = torch.zeros((N, num_ex_clinical), device=device)
+
+    # 添加基于 ex_clinical 的超边
+    for idx in range(num_ex_clinical):
+        # 获取 ex_clinical 值为 unique_ex_clinical[idx] 的样本索引
+        samples_in_hyperedge = torch.nonzero(inverse_indices == idx).squeeze()
+        H[samples_in_hyperedge, idx] = 1
+
+    return H
+
+def compute_neighbor_class_distribution(H, num_lb, y_lb, num_classes):
+    """
+    计算未标记样本的邻域类别分布。
+
+    Args:
+        H: [N, num_hyperedges]，超图的关联矩阵
+        num_lb: 已标记数据的数量
+        y_lb: [num_lb]，已标记数据的真实标签
+        num_classes: 类别数量
+
+    Returns:
+        neighbor_probs: [N - num_lb, num_classes]，未标记样本的邻域类别概率分布
+    """
+    N = H.size(0)
+    device = H.device
+    # 确保 y_lb 是整数类型
+    if y_lb.dtype != torch.long:
+        y_lb = y_lb.long()
+    # 初始化未标记样本的邻域类别分布
+    neighbor_probs = torch.zeros(N - num_lb, num_classes, device=device)
+
+    # H_ulb: 未标记样本对应的行
+    H_ulb = H[num_lb:]  # [N_ulb, num_hyperedges]
+
+    # H_lb: 已标记样本对应的行
+    H_lb = H[:num_lb]   # [num_lb, num_hyperedges]
+
+    # 计算每个未标记样本的邻域类别分布
+    for i in range(H_ulb.size(0)):
+        # 找到未标记样本的超边
+        hyperedges = (H_ulb[i] > 0).nonzero(as_tuple=True)[0]
+        if hyperedges.numel() == 0:
+            # 如果未标记样本未连接任何超边，使用均匀分布
+            neighbor_probs[i] = torch.full((num_classes,), 1.0 / num_classes, device=device)
+            continue
+        # 找到这些超边连接的已标记样本
+        neighbor_lb = (H_lb[:, hyperedges] > 0).nonzero(as_tuple=True)[0]
+        if neighbor_lb.numel() > 0:
+            # 收集已标记邻域样本的标签
+            neighbor_labels = y_lb[neighbor_lb]
+            # 统计类别分布
+            neighbor_labels = torch.argmax(neighbor_labels, dim=1)
+            class_counts = torch.bincount(neighbor_labels, minlength=num_classes)
+            neighbor_probs[i] = class_counts.float() / class_counts.sum()
+        else:
+            # 如果没有已标记邻域样本，使用均匀分布
+            neighbor_probs[i] = torch.full((num_classes,), 1.0 / num_classes, device=device)
+    return neighbor_probs
+
+def combine_predictions(model_probs, neighbor_probs, beta=0.5):
+    """
+    融合模型预测和邻域类别分布。
+
+    Args:
+        model_probs: [N_ulb, num_classes]，模型对未标记样本的预测概率
+        neighbor_probs: [N_ulb, num_classes]，未标记样本的邻域类别概率分布
+        beta: 融合权重
+
+    Returns:
+        combined_probs: [N_ulb, num_classes]，融合后的概率分布
+    """
+    combined_probs = beta * model_probs + (1 - beta) * neighbor_probs
+    return combined_probs
+
+def select_high_confidence_pseudo_labels(combined_probs, p_cutoff):
+    """
+    选择高置信度的伪标签。
+
+    Args:
+        combined_probs: [N_ulb, num_classes]，融合后的概率分布
+        p_cutoff: 置信度阈值
+
+    Returns:
+        pseudo_labels: [N_ulb]，伪标签
+        mask_ulb: [N_ulb]，高置信度样本的掩码
+    """
+    probs, pseudo_labels = torch.max(combined_probs, dim=1)
+    mask_ulb = probs > p_cutoff
+    return pseudo_labels, mask_ulb
+def comatch_contrastive_loss(feats_x_ulb_s_0, feats_x_ulb_s_1, Q, T=0.5):
+    # embedding similarity
+    sim = torch.exp(torch.mm(feats_x_ulb_s_0, feats_x_ulb_s_1.t())/ T) # 构建相似性
+    sim_probs = sim / sim.sum(1, keepdim=True) # 归一化
+    # contrastive loss
+    loss = - (torch.log(sim_probs + 1e-7) * Q).sum(1)
+    loss = loss.mean()
+    return loss
 
 class HGNN(nn.Module):
     def __init__(self, nb_classes, sz_embed, hidden):
@@ -260,6 +434,7 @@ class HyperMatch_Net(nn.Module):
             ])
         self.hgnn = HGNN(nb_classes=num_classes, sz_embed=proj_size, hidden=proj_size)
         self.hgnn2 = HGNN(nb_classes=num_classes, sz_embed=proj_size, hidden=proj_size)
+        self.hgnn3 = HGNN(nb_classes=num_classes, sz_embed=proj_size, hidden=proj_size)
 
     def l2norm(self, x, power=2):
         norm = x.pow(power).sum(1, keepdim=True).pow(1. / power)
@@ -281,13 +456,16 @@ class HyperMatch_Net(nn.Module):
 
         return {'logits': logits, 'feat': feat_proj, 'feat_proj1': feat_proj1, 'feat_proj2': feat_proj2,
                 'feat_proj3': feat_proj3}
-    def stage2_forward(self, embeddings,H,embeddings2,H2, **kwargs):
+
+    def stage2_forward(self, embeddings, H, embeddings2, H2, embeddings3, H3, **kwargs):
         logits = self.hgnn(embeddings, H)
         logits2 = self.hgnn2(embeddings2, H2)
+        logits3 = self.hgnn3(embeddings3, H3)
         return {
-            'hyper_logits': logits,
+            'hyper_logits1': logits,
             'hyper_logits2': logits2,
-                }
+            'hyper_logits3': logits3,
+        }
 
     def forward(self, x, **kwargs):
         feat = self.backbone(x, only_feat=True)
@@ -310,9 +488,8 @@ class HyperMatch_Net(nn.Module):
         return matcher
 
 
-@ALGORITHMS.register('hyperplusfixmatch')
-class HyperPlusFixMatch(AlgorithmBase):
-
+@ALGORITHMS.register('hyperplusfixmatchv3')
+class HyperPlusFixMatchV3(AlgorithmBase):
     """
         FixMatch algorithm (https://arxiv.org/abs/2001.07685).
 
@@ -332,18 +509,19 @@ class HyperPlusFixMatch(AlgorithmBase):
             - hard_label (`bool`, *optional*, default to `False`):
                 If True, targets have [Batch size] shape with int values. If False, the target is vector
     """
+
     def __init__(self, args, net_builder, tb_log=None, logger=None):
-        super().__init__(args, net_builder, tb_log, logger) 
+        super().__init__(args, net_builder, tb_log, logger)
         # fixmatch specified arguments
         self.init(T=args.T, p_cutoff=args.p_cutoff, hard_label=args.hard_label)
         self.clinical_mode = args.clinical
-    
+
     def init(self, T, p_cutoff, hard_label=True):
         self.T = T
         self.p_cutoff = p_cutoff
         self.use_hard_label = hard_label
         self.supconloss = SupConLoss()
-    
+
     def set_hooks(self):
         self.register_hook(
             DistAlignQueueHook(num_classes=self.num_classes, queue_length=self.args.da_len, p_target_type='uniform'),
@@ -354,31 +532,34 @@ class HyperPlusFixMatch(AlgorithmBase):
 
     def set_model(self):
         model = super().set_model()
-        model = HyperMatch_Net(model, proj_size=self.args.proj_size, epass=self.args.use_epass,num_classes=self.num_classes)
+        model = HyperMatch_Net(model, proj_size=self.args.proj_size, epass=self.args.use_epass,
+                               num_classes=self.num_classes)
         return model
 
     def set_ema_model(self):
         ema_model = self.net_builder(num_classes=self.num_classes)
-        ema_model = HyperMatch_Net(ema_model, proj_size=self.args.proj_size, epass=self.args.use_epass,num_classes=self.num_classes)
+        ema_model = HyperMatch_Net(ema_model, proj_size=self.args.proj_size, epass=self.args.use_epass,
+                                   num_classes=self.num_classes)
         ema_model.load_state_dict(self.check_prefix_state_dict(self.model.state_dict()))
         return ema_model
-    def train_step(self, x_lb, y_lb,in_clinical, x_ulb_w, x_ulb_s_0, x_ulb_s_1,ex_clinical):
+
+    def train_step(self, x_lb, y_lb, in_clinical, x_ulb_w, x_ulb_s_0, x_ulb_s_1, ex_clinical):
         num_lb = y_lb.shape[0]
         num_ulb = x_ulb_w.shape[0]
         # inference and calculate sup/unsup losses
         with self.amp_cm():
-            inputs = torch.cat((x_lb, x_ulb_w, x_ulb_s_0)) #
-            clinical = torch.cat([in_clinical, ex_clinical,ex_clinical], dim=0)
+            inputs = torch.cat((x_lb, x_ulb_w, x_ulb_s_0))  #
+            clinical = torch.cat([in_clinical, ex_clinical, ex_clinical], dim=0)
             clinical2 = clinical
             clinical3 = clinical
             if 'eyeid' == self.clinical_mode or 'localization' == self.clinical_mode:
-                clinical = clinical[:][:,-4]
+                clinical = clinical[:][:, -4]
             elif 'bcva' == self.clinical_mode or 'sex' == self.clinical_mode:
-                clinical = clinical[:][:,-3]
-            elif 'cst' == self.clinical_mode  or 'age' == self.clinical_mode:
-                clinical = clinical[:][:,-2]
-            elif 'patientid' == self.clinical_mode  or 'lesion_id' == self.clinical_mode:
-                clinical = clinical[:][:,-1]
+                clinical = clinical[:][:, -3]
+            elif 'cst' == self.clinical_mode or 'age' == self.clinical_mode:
+                clinical = clinical[:][:, -2]
+            elif 'patientid' == self.clinical_mode or 'lesion_id' == self.clinical_mode:
+                clinical = clinical[:][:, -1]
             elif 'eyeid-bcva' == self.clinical_mode or 'localization-sex' == self.clinical_mode:
                 clinical = clinical[:][:, -4]
                 clinical2 = clinical2[:][:, -3]
@@ -399,120 +580,115 @@ class HyperPlusFixMatch(AlgorithmBase):
                 clinical2 = clinical2[:][:, -3]
                 clinical3 = clinical3[:][:, -2]
             else:
-                clinical = clinical[:][:,-1]
+                clinical = clinical[:][:, -1]
             outputs = self.model.stage1_forward((inputs))
-            logits, feats,feat_proj1,feat_proj2,feat_proj3 = outputs['logits'], outputs['feat'],outputs['feat_proj1'],outputs['feat_proj2'],outputs['feat_proj3']
+            logits, feats, feat_proj1, feat_proj2, feat_proj3 = outputs['logits'], outputs['feat'], outputs[
+                'feat_proj1'], outputs['feat_proj2'], outputs['feat_proj3']
             logits_x_lb, feats_x_lb = logits[:num_lb], feats[:num_lb]
             logits_x_ulb_w, logits_x_ulb_s_0 = logits[num_lb:].chunk(2)
             feats_x_ulb_w, feats_x_ulb_s_0 = feats[num_lb:].chunk(2)
-            feat_dict = {'x_lb': feats_x_lb, 'x_ulb_w': feats_x_ulb_w, 'x_ulb_s':[feats_x_ulb_s_0]}
+            feat_dict = {'x_lb': feats_x_lb, 'x_ulb_w': feats_x_ulb_w, 'x_ulb_s': [feats_x_ulb_s_0]}
             # 获取未标记数据的 ex_clinical 和类别预测
             ex_clinical_ulb_w = clinical[num_lb:num_lb + num_ulb]
             ex_clinical_ulb_s0 = clinical[num_lb + num_ulb:num_lb + 2 * num_ulb]
             # 获取类别预测
-            if self.args.loss == 'bce':
-                pred_classes_ulb_w = (torch.sigmoid(logits_x_ulb_w) > 0.5).float()
-                pred_classes_ulb_s0 = (torch.sigmoid(logits_x_ulb_s_0) > 0.5).float()
-                # 构建超图 H1（针对 x_ulb_w）
-                # H1, node_embeddings1 = construct_hypergraph_multilabel(ex_clinical_ulb_w, pred_classes_ulb_w,
-                #                                                        feats_x_ulb_w)
-                # # 构建超图 H2（针对 x_ulb_s_0）
-                # H2, node_embeddings2 = construct_hypergraph_multilabel(ex_clinical_ulb_s0, pred_classes_ulb_s0,
-                #                                                        feats_x_ulb_s_0)
+
+            # 构建超图,针对标记数据.这个超图是绝对的，不会改变
+            H_lb, node_embeddings_lb, _ = construct_hypergraph_single_label_whole(clinical[:num_lb],
+                                                                            torch.argmax(y_lb, dim=1),
+                                                                            feats[:num_lb])
+
+            # 构建超图 针对 x_ulb_s_0）
+            pred_classes_ulb_s0 = logits_x_ulb_s_0.argmax(dim=1)
+            H_ulb, node_embeddings_ulb, _ = construct_hypergraph_single_label_whole(ex_clinical_ulb_s0,
+                                                                              pred_classes_ulb_s0,
+                                                                              feats_x_ulb_s_0)
+
+            # 构建全部的超图
+            # 这里使用伪标签的目的主要是为了 ，从而实现样本之间的信息传递，但这里的伪标签带有极大的噪声
+            pred_classes_ulb_w = logits_x_ulb_w.argmax(dim=1)
+            label_classes = torch.cat((torch.argmax(y_lb, dim=1), pred_classes_ulb_w), dim=0)
+            H_whole, node_embeddings_whole, indices_map = construct_hypergraph_single_label_whole(clinical[:num_lb + num_ulb],
+                                                                                        label_classes,
+                                                                                        feats[:num_lb + num_ulb])
 
 
-            #     whole
-                H1, node_embeddings1 = construct_hypergraph_single_label_whole(ex_clinical_ulb_w, pred_classes_ulb_w,
-                                                                       feats_x_ulb_w)
-                # 构建超图 H2（针对 x_ulb_s_0）
-                H2, node_embeddings2 = construct_hypergraph_single_label_whole(ex_clinical_ulb_s0, pred_classes_ulb_s0,
-                                                                   feats_x_ulb_s_0)
+            hyper_out = self.model.stage2_forward(node_embeddings_lb, H_lb, node_embeddings_ulb, H_ulb, node_embeddings_whole, H_whole)
 
-            else:
-                pred_classes_ulb_w = logits_x_ulb_w.argmax(dim=1)
-                pred_classes_ulb_s0 = logits_x_ulb_s_0.argmax(dim=1)
-                H1, node_embeddings1, indices_map  = construct_hypergraph_single_label_whole(ex_clinical_ulb_w, pred_classes_ulb_w,
-                                                                       feats_x_ulb_w)
-                # print(H1)
-                # 构建超图 H2（针对 x_ulb_s_0）
-                H2, node_embeddings2, _  = construct_hypergraph_single_label_whole(ex_clinical_ulb_s0, pred_classes_ulb_s0,
-                                                                       feats_x_ulb_s_0)
 
-            hyper_out = self.model.stage2_forward(node_embeddings1, H1,node_embeddings2,H2)
-            hyper_weak_out,hyper_strong_out = hyper_out['hyper_logits'],hyper_out['hyper_logits2']
-            hyper_weak_out = nn.functional.softmax(hyper_weak_out)
-            hyper_strong_out = nn.functional.softmax(hyper_strong_out)
-            hyper_loss = nn.functional.kl_div(hyper_weak_out,hyper_strong_out) + nn.functional.kl_div(hyper_strong_out,hyper_weak_out)
-            sup_loss = self.ce_loss(logits_x_lb, y_lb, reduction='mean')
+            hyper_lb_out, hyper_ulb_out, hyper_whole_out = hyper_out['hyper_logits1'], hyper_out['hyper_logits2'], hyper_out['hyper_logits3']
+
+            DL1,DL2 = F.softmax(logits_x_lb,dim=1), F.softmax(hyper_lb_out,dim=1)
+            DDL = F.kl_div(DL1.log(), DL2, reduction='none') + F.kl_div(DL2.log(), DL1, reduction='none')
+
+            DL_whole1, DL_whole2 = F.softmax(logits_x_lb,dim=1), F.softmax(hyper_whole_out[:num_lb],dim=1)
+            DDL_whole = F.kl_div(DL_whole1.log(), DL_whole2, reduction='none') + F.kl_div(DL_whole2.log(), DL_whole1, reduction='none')
+
+            # 计算DDU1_s(distribution difference for unlabeled data)
+            DU1, DU2 = F.softmax(logits_x_ulb_s_0,dim=1), F.softmax(hyper_ulb_out,dim=1)
+            # 计算每个未标记样本的 DDU_s
+            DDU = F.kl_div(DU1.log(), DU2, reduction='none').sum(dim=1) + \
+                    F.kl_div(DU2.log(), DU1, reduction='none').sum(dim=1)
+
+            # 计算DDU1_w(distribution difference for unlabeled data)
+            DU1_whole, DU2_whole = F.softmax(logits_x_ulb_w,dim=1), F.softmax(hyper_whole_out[num_lb:],dim=1)
+            # 计算每个未标记样本的 DDU_w
+            DDU_whole = F.kl_div(DU1_whole.log(), DU2_whole, reduction='none').sum(dim=1) + \
+                    F.kl_div(DU2_whole.log(), DU1_whole, reduction='none').sum(dim=1)
+
+
+            # 将DDL展平为二维数据，每个类别视为一个样本
+            gmm_DDL = 0.5 * DDL + 0.5 * DDL_whole  # [num_lb, num_classes]
+            gmm = fit_gmm_on_DDL(gmm_DDL,self.num_classes)  # [num_lb, num_classes]
+            # 计算未标记样本的DDU似然概率
+            gmm_DDU = 0.5 * DDU + 0.5 * DDU_whole  # [num_ulb, num_classes]
+            likelihoods = compute_DDU_likelihood(gmm, gmm_DDU)  # [num_ulb]
+
+            # 选择高可信度样本 ,形成一个mask
+            selected_mask = select_high_confidence_samples(likelihoods, threshold=0.8)  # 根据需要调整阈值
+            probs = F.softmax(logits_x_ulb_w, dim=1)
+            probs = self.call_hook("dist_align", "DistAlignHook", probs_x_ulb=probs.detach())
+            mask = self.call_hook("masking", "MaskingHook", logits_x_ulb=probs, softmax_x_ulb=False)
+            # mask的形状是[num_ulb, num_classes],现在需要将其转换为[num_ulb]
+            mask = mask.argmax(dim=1).bool()
+            final_mask = mask | selected_mask.bool()
+
+            hyper_class_loss = self.consistency_loss(logits_x_ulb_s_0,pred_classes_ulb_w,self.args.loss,final_mask) + \
+                                 self.consistency_loss(hyper_ulb_out,pred_classes_ulb_w,self.args.loss,final_mask)
+
+
+
+            # 监督损失
+            sup_loss = self.ce_loss(logits_x_lb, y_lb, reduction='mean') + self.ce_loss(hyper_lb_out, y_lb, reduction='mean')
 
             # supcon loss
             self.supconloss.device = feats_x_ulb_w.device
-            clinical_supcon_feats = torch.cat([feats_x_ulb_w.unsqueeze(1),feats_x_ulb_s_0.unsqueeze(1)],dim=1)
+            clinical_supcon_feats = torch.cat([feats_x_ulb_w.unsqueeze(1), feats_x_ulb_s_0.unsqueeze(1)], dim=1)
             # print(clinical_supcon_feats.shape,clinical[num_lb:].shape)
             if 'simclr' == self.clinical_mode:
                 sup_con_loss = self.supconloss(clinical_supcon_feats)
-            elif 'eyeid-cst' == self.clinical_mode or 'eyeid-bcva' == self.clinical_mode or 'bcva-cst' == self.clinical_mode :
-                sup_con_loss = self.supconloss(clinical_supcon_feats,clinical[num_lb:num_lb + num_ulb]) + self.supconloss(clinical_supcon_feats,clinical2[num_lb:num_lb + num_ulb])
+            elif 'eyeid-cst' == self.clinical_mode or 'eyeid-bcva' == self.clinical_mode or 'bcva-cst' == self.clinical_mode:
+                sup_con_loss = self.supconloss(clinical_supcon_feats,
+                                               clinical[num_lb:num_lb + num_ulb]) + self.supconloss(
+                    clinical_supcon_feats, clinical2[num_lb:num_lb + num_ulb])
             elif 'eyeid-bcva-cst' == self.clinical_mode:
-                sup_con_loss = self.supconloss(clinical_supcon_feats,clinical[num_lb:num_lb + num_ulb]) + self.supconloss(clinical_supcon_feats,clinical2[num_lb:num_lb + num_ulb]) + self.supconloss(clinical_supcon_feats,clinical3[num_lb:num_lb + num_ulb])
+                sup_con_loss = self.supconloss(clinical_supcon_feats,
+                                               clinical[num_lb:num_lb + num_ulb]) + self.supconloss(
+                    clinical_supcon_feats, clinical2[num_lb:num_lb + num_ulb]) + self.supconloss(clinical_supcon_feats,
+                                                                                                 clinical3[
+                                                                                                 num_lb:num_lb + num_ulb])
             else:
-                sup_con_loss = self.supconloss(clinical_supcon_feats,clinical[num_lb:num_lb + num_ulb])
-
-            # probs_x_ulb_w = torch.softmax(logits_x_ulb_w, dim=-1)
-            probs_x_ulb_w = self.compute_prob(logits_x_ulb_w.detach())
-            
-            # if distribution alignment hook is registered, call it 
-            # this is implemented for imbalanced algorithm - CReST
-            probs_x_ulb_w = self.call_hook("dist_align", "DistAlignHook", probs_x_ulb=probs_x_ulb_w.detach())
-
-            multi_label = True if self.args.loss == 'bce' else False
-
-            # compute mask,mask的作用是通过阈值来过滤掉一些概率值，使得后续计算损失的时候，小于阈值的样本不参与计算
-            mask = self.call_hook("masking", "MaskingHook", logits_x_ulb=probs_x_ulb_w, softmax_x_ulb=False,multi_label=multi_label)
-            # generate unlabeled targets using pseudo label hook
-            pseudo_label = self.call_hook("gen_ulb_targets", "PseudoLabelingHook",
-                                          logits=probs_x_ulb_w,
-                                          use_hard_label=self.use_hard_label,
-                                          T=self.T,
-                                          softmax=False,
-                                          multi_label=multi_label,
-                                          )
-            # hypergraph section
-            probs_x_ulb_hyper_w = self.compute_prob(hyper_weak_out.detach())
-            probs_x_ulb_hyper_s = self.compute_prob(hyper_strong_out.detach())
-            # 得到每个样本最大的概率值
-            probs_x_ulb_hyper_w = torch.max(probs_x_ulb_hyper_w, dim=1)[0]
-            probs_x_ulb_hyper_s = torch.max(probs_x_ulb_hyper_s, dim=1)[0]
-            # algorithm.p_cutoff
-            # 分别计算大于algorithm.p_cutoff的mask
-            mask_hyper_w = probs_x_ulb_hyper_w > 0.7
-            mask_hyper_s = probs_x_ulb_hyper_s > 0.7
-            # mask_hyper_w和mask_hyper_s可以通过indices_map来找到对应的mask
-            # mask_hyper_w和mask_hyper_s进行或运算
-            mask_hyper = mask_hyper_w | mask_hyper_s
-            mask[indices_map] = mask_hyper.to(mask.dtype)
-            pseudo_label_hyper = pseudo_label[indices_map]
-
-            unsup_hyper_loss = self.consistency_loss(hyper_strong_out,
-                                                     pseudo_label_hyper,
-                                                     self.args.loss,
-                                                     mask_hyper)
+                sup_con_loss = self.supconloss(clinical_supcon_feats, clinical[num_lb:num_lb + num_ulb])
 
 
-            unsup_loss = self.consistency_loss(logits_x_ulb_s_0,
-                                               pseudo_label,
-                                               self.args.loss,
-                                               mask=mask)
-
-            total_loss = sup_loss + unsup_hyper_loss + self.lambda_u * unsup_loss + hyper_loss + sup_con_loss
+            total_loss = sup_loss + self.lambda_u * hyper_class_loss  + sup_con_loss
 
         out_dict = self.process_out_dict(loss=total_loss, feat=feat_dict)
-        log_dict = self.process_log_dict(sup_loss=sup_loss.item(), 
-                                         unsup_loss=unsup_loss.item(), 
-                                         total_loss=total_loss.item(), 
-                                         util_ratio=mask.float().mean().item())
+        log_dict = self.process_log_dict(sup_loss=sup_loss.item(),
+                                         unsup_loss=hyper_class_loss.item(),
+                                         total_loss=total_loss.item(),
+                                         util_ratio=0)
         return out_dict, log_dict
-        
 
     @staticmethod
     def get_argument():

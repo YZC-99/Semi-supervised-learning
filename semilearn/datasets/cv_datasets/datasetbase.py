@@ -116,10 +116,12 @@ class BasicDataset(Dataset):
                     img_s2 = self.strong_transform(img)
                     return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s_0': img_s1, 'x_ulb_s_1':img_s2, 'x_ulb_s_0_rot':img_s1_rot, 'rot_v':rotate_v_list.index(rotate_v1)}
                 elif self.alg == 'comatch' or self.alg == 'conmatch' or self.alg == 'comatch_wo_memory' or \
-                        self.alg == 'comatch_wo_graph' or self.alg == 'hyperfixmatch' or self.alg == 'hyperplusfixmatch':
+                        self.alg == 'comatch_wo_graph' or self.alg == 'hyperfixmatch' or self.alg == 'hyperplusfixmatch' \
+                        or self.alg == 'hyperplusfixmatchv2' or self.alg == 'hyperplusfixmatchv3':
                     return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s_0': self.strong_transform(img), 'x_ulb_s_1':self.strong_transform(img)}
                 else:
                     return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s': self.strong_transform(img)}
+                    # return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s_0': self.strong_transform(img), 'x_ulb_s_1':self.strong_transform(img)}
 
     def getitem_test(self, idx):
         """
@@ -130,36 +132,8 @@ class BasicDataset(Dataset):
         """
         img, target,path = self.__sample__(idx)
 
-        if self.transform is None:
-            return  {'x_lb':  transforms.ToTensor()(img), 'y_lb': target}
-        else:
-            if isinstance(img, np.ndarray):
-                img = Image.fromarray(img)
-            img_w = self.transform(img)
-            if not self.is_ulb:
-                return {'idx_lb': idx, 'x_lb': img_w, 'y_lb': target,'image_path':path}
-            else:
-                if self.alg == 'fullysupervised' or self.alg == 'supervised':
-                    return {'idx_ulb': idx,'image_path':path}
-                elif self.alg == 'pseudolabel' or self.alg == 'vat':
-                    return {'idx_ulb': idx, 'x_ulb_w':img_w,'image_path':path}
-                elif self.alg == 'pimodel' or self.alg == 'meanteacher' or self.alg == 'mixmatch':
-                    # NOTE x_ulb_s here is weak augmentation
-                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s': self.transform(img),'image_path':path}
-                # elif self.alg == 'sequencematch' or self.alg == 'somematch':
-                elif self.alg == 'sequencematch':
-                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_m': self.medium_transform(img), 'x_ulb_s': self.strong_transform(img),'image_path':path}
-                elif self.alg == 'remixmatch':
-                    rotate_v_list = [0, 90, 180, 270]
-                    rotate_v1 = np.random.choice(rotate_v_list, 1).item()
-                    img_s1 = self.strong_transform(img)
-                    img_s1_rot = torchvision.transforms.functional.rotate(img_s1, rotate_v1)
-                    img_s2 = self.strong_transform(img)
-                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s_0': img_s1, 'x_ulb_s_1':img_s2, 'x_ulb_s_0_rot':img_s1_rot, 'rot_v':rotate_v_list.index(rotate_v1),'image_path':path}
-                elif self.alg == 'comatch':
-                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s_0': self.strong_transform(img), 'x_ulb_s_1':self.strong_transform(img),'image_path':path}
-                else:
-                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s': self.strong_transform(img),'image_path':path}
+        return  {'idx_lb': idx, 'image_path':path, 'x_lb':  self.transform(img), 'y_lb': target}
+
 
     def getitem_train_clinical(self, idx):
         img, target,clinical,path = self.__sample__(idx)
@@ -173,15 +147,18 @@ class BasicDataset(Dataset):
             if not self.is_ulb:
                 if self.alg == 'clinfixmatch':
                     return {'idx_lb': idx, 'x_lb_w': img_w,'x_lb_s': self.strong_transform(img), 'y_lb': target,'in_clinical':clinical}
-                elif self.alg == 'hypercomatch' or self.alg == 'hyperfixmatch' or self.alg == 'hyperplusfixmatch':
+                # elif self.alg == 'hypercomatch' or self.alg == 'hyperfixmatch' or self.alg == 'hyperplusfixmatch' or self.alg == 'hyperplusfixmatchv2':
+                else:
                     return {'idx_lb': idx, 'x_lb': img_w,'y_lb': target, 'in_clinical': clinical}
             else:
                 if self.alg == 'fullysupervised' or self.alg == 'supervised':
                     return {'idx_ulb': idx}
-                elif self.alg == 'hypercomatch' or self.alg == 'hyperfixmatch' or self.alg == 'hyperplusfixmatch':
-                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s_0': self.strong_transform(img), 'x_ulb_s_1':self.strong_transform(img),'ex_clinical':clinical}
+                # elif self.alg == 'hypercomatch' or self.alg == 'hyperfixmatch' or self.alg == 'hyperplusfixmatch' or \
+                #         self.alg == 'hyperplusfixmatchv2':
                 else:
-                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s': self.strong_transform(img),'ex_clinical':clinical}
+                    return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s_0': self.strong_transform(img), 'x_ulb_s_1':self.strong_transform(img),'ex_clinical':clinical}
+                # else:
+                #     return {'idx_ulb': idx, 'x_ulb_w': img_w, 'x_ulb_s': self.strong_transform(img),'ex_clinical':clinical}
 
     def __getitem__(self, idx):
         if self.is_test:

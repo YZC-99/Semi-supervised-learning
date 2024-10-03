@@ -5,6 +5,8 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader, RandomSampler
 from semilearn.lighting.sampler import Memory_NoReplacement_Sampler
 import torch
+
+import shutil
 import os
 # 忽略警告
 import warnings
@@ -21,7 +23,7 @@ parser.add_argument("--model_ckpt", type=str, default=None)
 parser.add_argument("--dataset", type=str, default='olives')
 parser.add_argument("--save_dir", type=str, default='oct_exp')
 parser.add_argument("--num_train_iter", type=int, default=12000)
-parser.add_argument("--num_warmup_iter", type=int, default=0.0)
+parser.add_argument("--num_warmup_iter", type=float, default=0.0)
 parser.add_argument("--num_eval_iter", type=int, default=117)
 parser.add_argument("--num_classes", type=int, default=16)
 parser.add_argument("--seed", type=int, default=42)
@@ -35,7 +37,7 @@ parser.add_argument("--uratio", type=int, default=3)
 parser.add_argument("--amp", type=bool, default=True)
 parser.add_argument("--optim", type=str, default='Adam')
 parser.add_argument("--loss", type=str, default='bce')
-parser.add_argument("--lr", type=float, default=0.001)
+parser.add_argument("--lr", type=float, default=0.0001)
 parser.add_argument("--exterrio", type=float, default=0.0)
 parser.add_argument("--clinical", type=str, default=None,help='simclr,eyeid,bcva,cst,patientid')
 parser.add_argument("--other", type=str, default='')
@@ -46,6 +48,7 @@ parser.add_argument("--epochs", type=int, default=1000000)
 parser.add_argument("--vpt_shallow", action='store_true',default=False)
 parser.add_argument("--vpt_deep", action='store_true',default=False)
 parser.add_argument("--vpt_last", action='store_true',default=False)
+parser.add_argument("--overfit", action='store_true',default=False)
 
 parser.add_argument("--vpt_len", type=int,default=50)
 
@@ -95,6 +98,7 @@ if __name__ == '__main__':
         'optim': optim,
         'lr': lr,
         'momentum': 0.9,
+        'seed': args.seed,
         'batch_size': batch_size,
         'eval_batch_size': 128,
         # dataset configs
@@ -123,30 +127,20 @@ if __name__ == '__main__':
     # Create TensorBoard SummaryWriter
     tb_log = SummaryWriter(log_dir=os.path.join(config.save_dir,config.save_name))
 
+    shutil.copytree('./semilearn/algorithms/hyperplusfixmatchv3',os.path.join(config.save_dir,config.save_name,'code'),
+                    ignore=shutil.ignore_patterns('data','output','__pycache__','code','runs','.*'),
+                    dirs_exist_ok=True
+                    )
+
+
     algorithm = get_algorithm(config,  get_net_builder(config.net, from_name=False), tb_log=tb_log, logger=None)
 
     # create dataset
     dataset_dict = get_dataset(config, config.algorithm, config.dataset, config.num_labels,
                                config.num_classes, data_dir=config.data_dir)
 
-    lb_loader_length = len(dataset_dict['train_lb']) // config.batch_size
-    ulb_loader_length = len(dataset_dict['train_ulb']) // int(config.batch_size * config.uratio)
 
-    lb_repeat_times = len(dataset_dict['train_ulb']) // len(dataset_dict['train_lb'])
-    # 这种分为俩种情况，一种是有标签数据多，一种是无标签数据多。
-    #1、有标签loader的长度大于无标签loader的长度，那么共同训练得时候loader得结束是以短得为准，因此要对长得数据进行无放回采样
-    #2、无标签loader的长度大于有标签loader的长度，那么共同训练得时候loader得结束是以短得为准，因此要对长得数据进行有放回采样
-    # if lb_loader_length > ulb_loader_length:
-    #     # 对有标签数据进行无放回采样，无标记数据不需要采样
-    #     lb_sampler = Memory_NoReplacement_Sampler(dataset_dict['train_lb'])
-    #     ulb_sampler = None
-    # else:
-    #     # 对无标签数据进行无放回采样，有标记数据不需要采样
-    #     ulb_sampler = Memory_NoReplacement_Sampler(dataset_dict['train_ulb'])
-    #     lb_sampler = None
-    # if config.algorithm == 'fullysupervised':
-    #     lb_sampler = None
-    #     ulb_sampler = None
+
     ulb_sampler = None
     lb_sampler = None
     if config.algorithm == 'fullysupervised':
@@ -157,16 +151,25 @@ if __name__ == '__main__':
         ulb_bs = config.batch_size - lb_bs
         print('lb_bs:', lb_bs, 'ulb_bs:', ulb_bs)
 
+    lb_loader_length = len(dataset_dict['train_lb']) // lb_bs
+    ulb_loader_length = len(dataset_dict['train_ulb']) // ulb_bs
+
+    # lb_repeat_times = len(dataset_dict['train_ulb']) // len(dataset_dict['train_lb'])
+    lb_repeat_times = ulb_loader_length // lb_loader_length
+
     # create data loader for unlabeled training set
     train_ulb_loader = get_data_loader(config, dataset_dict['train_ulb'], ulb_bs,
                                        data_sampler=ulb_sampler,num_workers=args.num_workers,drop_last=True,shuffle= True if ulb_sampler is None else False)
 
     # create data loader for labeled training set
     train_lb_loader = get_data_loader(config, dataset_dict['train_lb'], lb_bs,
-                                      data_sampler=lb_sampler,num_workers=args.num_workers, pin_memory=True,drop_last=True, shuffle=True,lb_repeat_times=lb_repeat_times)
+                                      data_sampler=lb_sampler,num_workers=args.num_workers, pin_memory=True,drop_last=True,
+                                      shuffle=True,lb_repeat_times=lb_repeat_times)
 
     # create data loader for evaluation
     eval_loader = get_data_loader(config, dataset_dict['eval'], config.eval_batch_size,data_sampler=None,drop_last=False)
+    if args.overfit:
+        eval_loader = get_data_loader(config, dataset_dict['test'], config.eval_batch_size,data_sampler=None,drop_last=False)
 
     test_loader = get_data_loader(config, dataset_dict['test'], config.eval_batch_size,data_sampler=None,drop_last=False)
 
@@ -174,20 +177,13 @@ if __name__ == '__main__':
 
     if args.model_ckpt is not None:
         ckpt_dict = torch.load(args.model_ckpt,map_location='cpu')['model']
-        # 由于是多卡训练，所以需要去掉module
-        ckpt_dict = {k.replace('module.', ''): v for k, v in ckpt_dict.items()}
-        ckpt_dict = {k.replace('encoder.', ''): v for k, v in ckpt_dict.items()}
-        # 移除head
         ckpt_dict = {k: v for k, v in ckpt_dict.items() if 'head' not in k}
-        algorithm.model.load_state_dict(ckpt_dict,strict=False)
+        if args.algorithm == 'hyperplusfixmatchv2':
+        # 由于现有的模型在所有的参数的前面都多了一个backbone.的前缀，所以权重加载的时候也要加上这个前缀
+            ckpt_dict = {f'backbone.{k}': v for k, v in ckpt_dict.items()}
+        # algorithm.model.load_state_dict(ckpt_dict)
         print('load model from:', args.model_ckpt)
         # exclude_list = ['classifier', 'head','deep_prompt_embeddings','prompt_embeddings']
-        if args.finetune_mode == 'LP' or args.finetune_mode == 'VPT': # 除了最后一层全连接层，其他层都冻结
-            for name, param in algorithm.model.named_parameters():
-                param.requires_grad = False
-                if 'classifier' in name or 'head' in name or 'deep_prompt_embeddings' in name or 'prompt_embeddings' in name \
-                        or 'prompt_proj' in name or 'prompt_dropout' in name:
-                    param.requires_grad = True
 
 
     trainer = Trainer(config, algorithm)
