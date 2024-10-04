@@ -19,7 +19,7 @@ def get_target_names_labels():
 
     target_csv = "/home/gu721/yzc/Semi-supervised-learning/data/ISIC2018/test_dataset.csv"
     if not ABS_FLAG:
-        target_csv = "/root/Semi-supervised-learning/data/ISIC2018/train_dataset.csv"
+        target_csv = "/root/Semi-supervised-learning/data/ISIC2018/test_dataset.csv"
     target_all_info = pd.read_csv(target_csv)
     target_all_info = target_all_info.fillna(0)
     target_names = target_all_info.iloc[:, 0].values
