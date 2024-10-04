@@ -14,7 +14,7 @@ from torchvision import transforms
 from semilearn.datasets.cv_datasets.datasetbase import BasicDataset
 from semilearn.datasets.augmentation import RandAugment, RandomResizedCropAndInterpolation
 from semilearn.datasets.utils import split_ssl_data
-from semilearn.datasets.multilabel_utils import split_ssl_multilabel_data
+from semilearn.datasets.multilabel_utils import split_ssl_multilabel_data, split_ssl_multilabel_data_full
 
 
 
@@ -68,12 +68,18 @@ def get_cxr8(args, alg,num_labels, num_classes,include_lb_to_ulb=False):
         transforms.ToTensor(),
         transforms.Normalize(imgnet_mean, imgnet_std)
     ])
-
-    lb_data, lb_targets, ulb_data, ulb_targets = split_ssl_multilabel_data(args, data, targets, num_classes,
+    # 简单粗暴的方法，直接取数据的前一部分作为有标签数据，后一部分作为无标签数据
+    # lb_data, lb_targets, ulb_data, ulb_targets = data[:num_labels], targets[:num_labels], data[num_labels:], targets[num_labels:]
+    lb_data, lb_targets, ulb_data, ulb_targets = split_ssl_multilabel_data_full(args, data, targets, num_classes,
                                                                 lb_num_labels=num_labels,
                                                                 ulb_num_labels=args.ulb_num_labels,
                                                                 include_lb_to_ulb=include_lb_to_ulb,
                                                                            load_exist=False)
+    # lb_data, lb_targets, ulb_data, ulb_targets = split_ssl_multilabel_data(args, data, targets, num_classes,
+    #                                                             lb_num_labels=num_labels,
+    #                                                             ulb_num_labels=args.ulb_num_labels,
+    #                                                             include_lb_to_ulb=include_lb_to_ulb,
+    #                                                                        load_exist=False)
 
 
 
