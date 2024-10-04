@@ -43,6 +43,8 @@ def compute_metrics_single_classes(pred_logits_dir):
     pred_names = [name.replace(prefix, '') for name in pred_names]
     pred_names = [name.replace('.jpg', '') for name in pred_names]
 
+    # pred_names是,分开的，而target_names是空格分开的
+    target_names = [name.replace(' ', ',') for name in target_names]
     # 确保预测和标签的样本顺序一致
     name_to_index = {name: idx for idx, name in enumerate(target_names)}
     indices = [name_to_index[name] for name in pred_names]
