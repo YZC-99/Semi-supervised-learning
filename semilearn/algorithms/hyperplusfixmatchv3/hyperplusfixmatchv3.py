@@ -631,8 +631,8 @@ class HyperPlusFixMatchV3(AlgorithmBase):
             mask = mask.int()
             # 逻辑运算mask或post_correct_in_fc_probs_index
             final_mask = (mask | post_correct_in_fc_probs_index) & ~neg_correct_in_fc_probs_index
-            if self.args.loss == 'ce':
-                final_mask = final_mask.argmax(dim=1).bool()
+            # if self.args.loss == 'ce':
+            #     final_mask = final_mask.argmax(dim=1).bool()
 
             hyper_class_loss = self.consistency_loss(logits_x_ulb_s_0,pred_classes_ulb_w,self.args.loss,final_mask)
 
