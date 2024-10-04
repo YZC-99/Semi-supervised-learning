@@ -42,10 +42,8 @@ def get_cxr8(args, alg,num_labels, num_classes,include_lb_to_ulb=False):
 
     # mean = [0, 0, 0]
     # std = [1, 1, 1]
-    # imgnet_mean = (0.485, 0.456, 0.406)
-    # imgnet_std = (0.229, 0.224, 0.225)
-    imgnet_mean = (0, 0, 0)
-    imgnet_std = (1, 1, 1)
+    imgnet_mean = (0.485, 0.456, 0.406)
+    imgnet_std = (0.229, 0.224, 0.225)
     img_size = args.img_size
     crop_ratio = args.crop_ratio
     transform_weak = transforms.Compose([

@@ -47,7 +47,6 @@ class FixedThresholdingHook(MaskingHook):
     @torch.no_grad()
     def masking(self, algorithm, logits_x_ulb, softmax_x_ulb=True,multi_label=True, *args, **kwargs):
         if multi_label:
-            # probs_x_ulb = algorithm.compute_prob(logits_x_ulb.detach())
             mask = logits_x_ulb.detach().ge(algorithm.p_cutoff).to(logits_x_ulb.dtype)
             return mask
         else:

@@ -466,7 +466,7 @@ class AlgorithmBase:
                     y_logits.append(logits.cpu().numpy())
                     y_probs.append(torch.softmax(logits, dim=-1).cpu())
                 elif self.args.loss == 'bce':
-                    y_logits.append(torch.sigmoid(logits).float())
+                    y_logits.append(torch.sigmoid(logits).float().cpu())
                     y_true.append(y)
         if self.args.loss == 'ce':
             y_probs = torch.cat(y_probs).numpy()
@@ -483,15 +483,20 @@ class AlgorithmBase:
 
         elif self.args.loss =='bce':
             if not only_logits:
-                evaluator = Evaluator(self.num_classes)
-                result_dict = evaluator.compute(y_logits, y_true)
+                # evaluator = Evaluator(self.num_classes)
+                # result_dict = evaluator.compute(y_logits, y_true)
+                #
+                y_probs = torch.cat(y_logits).numpy()
+                y_true = torch.cat(y_true).numpy()
+                result_dict = compute_metrics(y_true, y_probs, self.num_classes,multi_label=True)
+
                 eval_dict = {
-                             eval_dest + '/F1': result_dict['OF1'],
-                             eval_dest + '/AUC': result_dict['AUC'],
-                             eval_dest + '/ACC': result_dict['ACC'],
-                             eval_dest + '/SENS': result_dict['SENS'],
-                             eval_dest + '/SPEC': result_dict['SPEC'],
-                             }
+                    eval_dest + '/F1': result_dict['F1'],
+                    eval_dest + '/AUC': result_dict['AUC'],
+                    eval_dest + '/ACC': result_dict['ACC'],
+                    eval_dest + '/SENS': result_dict['SENS'],
+                    eval_dest + '/SPEC': result_dict['SPEC'],
+                }
 
         if return_logits:
             eval_dict[eval_dest+'/logits'] = y_logits

@@ -120,73 +120,6 @@ def construct_hypergraph_multilabel(ex_clinical, pred_classes, feats):
     return H, node_features
 
 
-def construct_hypergraph_single_label(ex_clinical, pred_classes, feats):
-    """
-    构建超图 H 和对应的节点嵌入（单标签分类），并返回节点对应的原始样本索引。
-
-    Args:
-        ex_clinical: [N]，每个样本的 ex_clinical 值
-        pred_classes: [N]，每个样本的预测类别（单标签，类别索引）
-        feats: [N, F]，每个样本的特征嵌入
-
-    Returns:
-        H: [num_nodes, num_classes]，超图的关联矩阵
-        node_features: [num_nodes, F]，节点的嵌入
-        node_indices_map: [num_nodes]，每个节点对应的原始样本索引
-    """
-    N = ex_clinical.size(0)
-    device = ex_clinical.device
-    num_classes = pred_classes.max().item() + 1  # 假设类别索引从 0 开始
-
-    # 获取 ex_clinical 的唯一值及其在节点中的索引
-    unique_ex_clinical, node_indices = torch.unique(ex_clinical, return_inverse=True)
-    num_nodes = unique_ex_clinical.size(0)
-
-    # 计算每个节点的特征（对于相同 ex_clinical 值的样本，取特征平均）
-    F = feats.size(1)
-    node_features = torch.zeros((num_nodes, F), device=device)
-    counts = torch.zeros(num_nodes, 1, device=device)
-
-    # 使用 index_add 累加特征和计数
-    node_features = node_features.index_add(0, node_indices, feats)
-    counts = counts.index_add(0, node_indices, torch.ones((N, 1), device=device))
-
-    # 计算平均特征
-    node_features = node_features / counts  # [num_nodes, F]
-
-    # 构建超图关联矩阵 H
-    class_indices = pred_classes  # [N]
-    node_indices_for_samples = node_indices  # [N]
-
-    H = torch.zeros((num_nodes, num_classes), device=device)
-    H[node_indices_for_samples, class_indices] = 1  # 设置关联矩阵中的值为 1
-
-    # 处理节点索引映射
-    node_indices_map = torch.zeros(num_nodes, dtype=torch.long, device=device)
-
-    for node_idx in range(num_nodes):
-        # 获取对应于该节点的样本索引
-        sample_indices_for_node = torch.nonzero(node_indices == node_idx).squeeze()
-        num_samples = sample_indices_for_node.numel()
-
-        if num_samples == 1:
-            # 节点没有参与平均特征计算，直接返回该样本的索引
-            node_indices_map[node_idx] = sample_indices_for_node.item()
-        else:
-            # 节点参与了平均特征计算，选择与平均特征 MSE 最小的样本索引
-            feats_for_node = feats[sample_indices_for_node]  # [num_samples, F]
-            node_feature = node_features[node_idx].unsqueeze(0)  # [1, F]
-
-            # 计算每个样本特征与平均特征之间的 MSE
-            mse = torch.mean((feats_for_node - node_feature) ** 2, dim=1)  # [num_samples]
-
-            # 获取具有最小 MSE 的样本索引
-            min_mse_idx = torch.argmin(mse)
-            selected_sample_idx = sample_indices_for_node[min_mse_idx]
-
-            node_indices_map[node_idx] = selected_sample_idx.item()
-
-    return H, node_features, node_indices_map
 
 
 def construct_hypergraph_single_label_whole(ex_clinical, pred_classes, feats):
@@ -242,115 +175,62 @@ def construct_hypergraph_single_label_whole(ex_clinical, pred_classes, feats):
 
     return H, node_features, node_indices_map
 
-
-def construct_hypergraph(ex_clinical, num_lb):
+def construct_hypergraph_multi_label_whole(ex_clinical, pred_classes, feats):
     """
-    构建超图 H，包括已标记和未标记数据。
+    构建超图 H 和对应的节点嵌入（多标签分类），每个样本都是一个节点。
 
     Args:
-        ex_clinical: [N]，每个样本的 ex_clinical 值（已标记和未标记）
-        num_lb: int，已标记数据的数量
+        ex_clinical: [N]，每个样本的 ex_clinical 值
+        pred_classes: [N, C]，每个样本的预测类别（多标签，二值化）
+        feats: [N, F]，每个样本的特征嵌入
 
     Returns:
         H: [N, num_hyperedges]，超图的关联矩阵
+        node_features: [N, F]，节点的嵌入（与 feats 相同）
+        node_indices_map: [N]，每个节点对应的原始样本索引（0 到 N-1）
     """
     N = ex_clinical.size(0)
     device = ex_clinical.device
+    F = feats.size(1)
 
-    # 构建基于临床标签的超边
+    # 每个样本都是一个节点
+    node_features = feats  # [N, F]
+    node_indices_map = torch.arange(N, device=device)  # [N]
+
+    # 构建超边
+    # 可以根据 ex_clinical 值和 pred_classes 构建两种类型的超边
+
+    # 1. 基于 ex_clinical 构建超边：将具有相同 ex_clinical 值的样本连接在一起
     unique_ex_clinical, inverse_indices = torch.unique(ex_clinical, sorted=True, return_inverse=True)
     num_ex_clinical = unique_ex_clinical.size(0)
 
+    # 2. 基于 pred_classes 构建超边：将包含相同标签的样本连接在一起（多标签情况）
+    num_classes = pred_classes.size(1)
+
+    # 总的超边数量
+    num_hyperedges = num_ex_clinical + num_classes
+
     # 构建关联矩阵 H，形状为 [N, num_hyperedges]
-    H = torch.zeros((N, num_ex_clinical), device=device)
+    H = torch.zeros((N, num_hyperedges), device=device)
 
     # 添加基于 ex_clinical 的超边
     for idx in range(num_ex_clinical):
         # 获取 ex_clinical 值为 unique_ex_clinical[idx] 的样本索引
         samples_in_hyperedge = torch.nonzero(inverse_indices == idx).squeeze()
-        H[samples_in_hyperedge, idx] = 1
+        H[samples_in_hyperedge, idx] = 1  # 超边索引从 0 开始
 
-    return H
+    # 添加基于 pred_classes 的超边（多标签处理）
+    for idx in range(num_classes):
+        # 获取 pred_classes 中类别 idx 对应的标签为 1 的样本索引
+        samples_in_hyperedge = torch.nonzero(pred_classes[:, idx] == 1).squeeze()
+        H[samples_in_hyperedge, num_ex_clinical + idx] = 1  # 超边索引从 num_ex_clinical 开始
 
-def compute_neighbor_class_distribution(H, num_lb, y_lb, num_classes):
-    """
-    计算未标记样本的邻域类别分布。
+    return H, node_features, node_indices_map
 
-    Args:
-        H: [N, num_hyperedges]，超图的关联矩阵
-        num_lb: 已标记数据的数量
-        y_lb: [num_lb]，已标记数据的真实标签
-        num_classes: 类别数量
 
-    Returns:
-        neighbor_probs: [N - num_lb, num_classes]，未标记样本的邻域类别概率分布
-    """
-    N = H.size(0)
-    device = H.device
-    # 确保 y_lb 是整数类型
-    if y_lb.dtype != torch.long:
-        y_lb = y_lb.long()
-    # 初始化未标记样本的邻域类别分布
-    neighbor_probs = torch.zeros(N - num_lb, num_classes, device=device)
 
-    # H_ulb: 未标记样本对应的行
-    H_ulb = H[num_lb:]  # [N_ulb, num_hyperedges]
 
-    # H_lb: 已标记样本对应的行
-    H_lb = H[:num_lb]   # [num_lb, num_hyperedges]
 
-    # 计算每个未标记样本的邻域类别分布
-    for i in range(H_ulb.size(0)):
-        # 找到未标记样本的超边
-        hyperedges = (H_ulb[i] > 0).nonzero(as_tuple=True)[0]
-        if hyperedges.numel() == 0:
-            # 如果未标记样本未连接任何超边，使用均匀分布
-            neighbor_probs[i] = torch.full((num_classes,), 1.0 / num_classes, device=device)
-            continue
-        # 找到这些超边连接的已标记样本
-        neighbor_lb = (H_lb[:, hyperedges] > 0).nonzero(as_tuple=True)[0]
-        if neighbor_lb.numel() > 0:
-            # 收集已标记邻域样本的标签
-            neighbor_labels = y_lb[neighbor_lb]
-            # 统计类别分布
-            neighbor_labels = torch.argmax(neighbor_labels, dim=1)
-            class_counts = torch.bincount(neighbor_labels, minlength=num_classes)
-            neighbor_probs[i] = class_counts.float() / class_counts.sum()
-        else:
-            # 如果没有已标记邻域样本，使用均匀分布
-            neighbor_probs[i] = torch.full((num_classes,), 1.0 / num_classes, device=device)
-    return neighbor_probs
-
-def combine_predictions(model_probs, neighbor_probs, beta=0.5):
-    """
-    融合模型预测和邻域类别分布。
-
-    Args:
-        model_probs: [N_ulb, num_classes]，模型对未标记样本的预测概率
-        neighbor_probs: [N_ulb, num_classes]，未标记样本的邻域类别概率分布
-        beta: 融合权重
-
-    Returns:
-        combined_probs: [N_ulb, num_classes]，融合后的概率分布
-    """
-    combined_probs = beta * model_probs + (1 - beta) * neighbor_probs
-    return combined_probs
-
-def select_high_confidence_pseudo_labels(combined_probs, p_cutoff):
-    """
-    选择高置信度的伪标签。
-
-    Args:
-        combined_probs: [N_ulb, num_classes]，融合后的概率分布
-        p_cutoff: 置信度阈值
-
-    Returns:
-        pseudo_labels: [N_ulb]，伪标签
-        mask_ulb: [N_ulb]，高置信度样本的掩码
-    """
-    probs, pseudo_labels = torch.max(combined_probs, dim=1)
-    mask_ulb = probs > p_cutoff
-    return pseudo_labels, mask_ulb
 def comatch_contrastive_loss(feats_x_ulb_s_0, feats_x_ulb_s_1, Q, T=0.5):
     # embedding similarity
     sim = torch.exp(torch.mm(feats_x_ulb_s_0, feats_x_ulb_s_1.t())/ T) # 构建相似性
@@ -552,13 +432,13 @@ class HyperPlusFixMatchV3(AlgorithmBase):
             clinical = torch.cat([in_clinical, ex_clinical, ex_clinical], dim=0)
             clinical2 = clinical
             clinical3 = clinical
-            if 'eyeid' == self.clinical_mode or 'localization' == self.clinical_mode:
+            if 'eyeid' == self.clinical_mode or 'localization' == self.clinical_mode or 'view_position' == self.clinical_mode:
                 clinical = clinical[:][:, -4]
-            elif 'bcva' == self.clinical_mode or 'sex' == self.clinical_mode:
+            elif 'bcva' == self.clinical_mode or 'sex' == self.clinical_mode or 'patient_gender' == self.clinical_mode:
                 clinical = clinical[:][:, -3]
-            elif 'cst' == self.clinical_mode or 'age' == self.clinical_mode:
+            elif 'cst' == self.clinical_mode or 'age' == self.clinical_mode or 'patient_age' == self.clinical_mode:
                 clinical = clinical[:][:, -2]
-            elif 'patientid' == self.clinical_mode or 'lesion_id' == self.clinical_mode:
+            elif 'patientid' == self.clinical_mode or 'lesion_id' == self.clinical_mode or 'patient_id' == self.clinical_mode:
                 clinical = clinical[:][:, -1]
             elif 'eyeid-bcva' == self.clinical_mode or 'localization-sex' == self.clinical_mode:
                 clinical = clinical[:][:, -4]
@@ -588,33 +468,49 @@ class HyperPlusFixMatchV3(AlgorithmBase):
             logits_x_ulb_w, logits_x_ulb_s_0 = logits[num_lb:].chunk(2)
             feats_x_ulb_w, feats_x_ulb_s_0 = feats[num_lb:].chunk(2)
             feat_dict = {'x_lb': feats_x_lb, 'x_ulb_w': feats_x_ulb_w, 'x_ulb_s': [feats_x_ulb_s_0]}
-
-            probs = F.softmax(logits_x_ulb_w, dim=1)
+            if self.ce_loss == 'ce':
+                probs = F.softmax(logits_x_ulb_w, dim=1)
+            else:
+                probs = F.sigmoid(logits_x_ulb_w)
             probs = self.call_hook("dist_align", "DistAlignHook", probs_x_ulb=probs.detach())
 
             # 获取未标记数据的 ex_clinical 和类别预测
             ex_clinical_ulb_w = clinical[num_lb:num_lb + num_ulb]
             ex_clinical_ulb_s0 = clinical[num_lb + num_ulb:num_lb + 2 * num_ulb]
             # 获取类别预测
+            if self.ce_loss == 'ce':
+                # 构建超图,针对标记数据.这个超图是绝对的，不会改变
+                H_lb, node_embeddings_lb, _ = construct_hypergraph_single_label_whole(clinical[:num_lb],
+                                                                                torch.argmax(y_lb, dim=1),
+                                                                                feats[:num_lb])
+                # 构建超图 针对 x_ulb_s_0）
+                pred_classes_ulb_s0 = logits_x_ulb_s_0.argmax(dim=1)
+                H_ulb, node_embeddings_ulb, _ = construct_hypergraph_single_label_whole(ex_clinical_ulb_s0,
+                                                                                  pred_classes_ulb_s0,
+                                                                                  feats_x_ulb_s_0)
+            else:
+                H_lb, node_embeddings_lb, _ = construct_hypergraph_multi_label_whole(clinical[:num_lb], y_lb, feats[:num_lb])
+                pred_classes_ulb_s0 = (torch.sigmoid(logits_x_ulb_s_0) > 0.5).float()
+                H_ulb, node_embeddings_ulb, _ = construct_hypergraph_multi_label_whole(ex_clinical_ulb_s0, pred_classes_ulb_s0, feats_x_ulb_s_0)
 
-            # 构建超图,针对标记数据.这个超图是绝对的，不会改变
-            H_lb, node_embeddings_lb, _ = construct_hypergraph_single_label_whole(clinical[:num_lb],
-                                                                            torch.argmax(y_lb, dim=1),
-                                                                            feats[:num_lb])
-
-            # 构建超图 针对 x_ulb_s_0）
-            pred_classes_ulb_s0 = logits_x_ulb_s_0.argmax(dim=1)
-            H_ulb, node_embeddings_ulb, _ = construct_hypergraph_single_label_whole(ex_clinical_ulb_s0,
-                                                                              pred_classes_ulb_s0,
-                                                                              feats_x_ulb_s_0)
 
             # 构建全部的超图
             # 这里使用伪标签的目的主要是为了 ，从而实现样本之间的信息传递，但这里的伪标签带有极大的噪声
-            pred_classes_ulb_w = logits_x_ulb_w.argmax(dim=1)
-            label_classes = torch.cat((torch.argmax(y_lb, dim=1), pred_classes_ulb_w), dim=0)
-            H_whole, node_embeddings_whole, indices_map = construct_hypergraph_single_label_whole(clinical[:num_lb + num_ulb],
-                                                                                        label_classes,
-                                                                                        feats[:num_lb + num_ulb])
+            if self.ce_loss == 'ce':
+                pred_classes_ulb_w = logits_x_ulb_w.argmax(dim=1)
+                label_classes = torch.cat((torch.argmax(y_lb, dim=1), pred_classes_ulb_w), dim=0)
+                H_whole, node_embeddings_whole, indices_map = construct_hypergraph_single_label_whole(
+                    clinical[:num_lb + num_ulb],
+                    label_classes,
+                    feats[:num_lb + num_ulb])
+            else:
+                pred_classes_ulb_w = (torch.sigmoid(logits_x_ulb_w) > 0.5).float()
+                label_classes = torch.cat((y_lb, pred_classes_ulb_w), dim=0)
+                H_whole, node_embeddings_whole, indices_map = construct_hypergraph_multi_label_whole(
+                    clinical[:num_lb + num_ulb],
+                    label_classes,
+                    feats[:num_lb + num_ulb])
+
 
 
             hyper_out = self.model.stage2_forward(node_embeddings_lb, H_lb, node_embeddings_ulb, H_ulb, node_embeddings_whole, H_whole)
@@ -644,30 +540,42 @@ class HyperPlusFixMatchV3(AlgorithmBase):
             self.supconloss.device = feats_x_ulb_w.device
             # 计算对比损失
             sup_con_loss = self.supconloss(clinical_supcon_feats, clinical[:num_lb + num_ulb])
+
+
+
+            # hyper_mean_lb_logits = (hyper_lb_logits + hyper_whole_logits[:num_lb]) / 2
+            # hyper_mean_ulb_logits = (hyper_ulb_logits + hyper_whole_logits[num_lb:]) / 2
             # 不计算梯度
             with torch.no_grad():
-                # 单独预测lb的logits
                 hyper_lb_logits = self.model.backbone(hyper_lb_out, only_fc=True)
                 # 单独预测ulb的logits
                 hyper_ulb_logits = self.model.backbone(hyper_ulb_out, only_fc=True)
                 # 单独预测whole的logits
                 hyper_whole_logits = self.model.backbone(hyper_whole_out, only_fc=True)
-                # 计算probs_lb的两个版本
-                probs_lb_fc = F.softmax(logits_x_lb, dim=1)
-                probs_lb_hyper = F.softmax(hyper_whole_logits[:num_lb], dim=1)
+                if self.ce_loss == 'ce':
+                    # 计算probs_lb的两个版本
+                    probs_lb_fc = F.softmax(logits_x_lb, dim=1)
+                    probs_lb_hyper = F.softmax(hyper_whole_logits[:num_lb], dim=1)
 
-                # 计算probs_ulb的两个版本
-                probs_ulb_fc = F.softmax(logits_x_ulb_w, dim=1)
-                probs_ulb_hyper = F.softmax(hyper_whole_logits[num_lb:], dim=1)
-
-
-                # 直觉上,lb和ulb的diff_probs在每个类别上的差异性至少在方向上应该保持一致
-                # 但是,现在还没有一个条件来保证:同方向差异性的lb在本次预测中是否是正确的,因此需要一个条件来约束,首先想到的是,lb的probs应当是正确的
-                # probs_lb_hyper还应该具有纠正错误的作用,比如:即使lb的probs是错误的,但是probs_lb_hyper是正确的,那么probs_lb_hyper应当具有纠正错误的作用
-                # 获得本次的probs_lb_fc里面预测正确的样本索引,
-                correct_in_fc_probs_index = torch.argmax(probs_lb_fc, dim=1) == torch.argmax(y_lb, dim=1)
-                # 获得本次probs_lb_hyper里面预测正确的样本索引
-                correct_in_hyper_probs_index = torch.argmax(probs_lb_hyper, dim=1) == torch.argmax(y_lb, dim=1)
+                    # 计算probs_ulb的两个版本
+                    probs_ulb_fc = F.softmax(logits_x_ulb_w, dim=1)
+                    probs_ulb_hyper = F.softmax(hyper_whole_logits[num_lb:], dim=1)
+                    # 直觉上,lb和ulb的diff_probs在每个类别上的差异性至少在方向上应该保持一致
+                    # 但是,现在还没有一个条件来保证:同方向差异性的lb在本次预测中是否是正确的,因此需要一个条件来约束,首先想到的是,lb的probs应当是正确的
+                    # probs_lb_hyper还应该具有纠正错误的作用,比如:即使lb的probs是错误的,但是probs_lb_hyper是正确的,那么probs_lb_hyper应当具有纠正错误的作用
+                    # 获得本次的probs_lb_fc里面预测正确的样本索引,
+                    correct_in_fc_probs_index = torch.argmax(probs_lb_fc, dim=1) == torch.argmax(y_lb, dim=1)
+                    # 获得本次probs_lb_hyper里面预测正确的样本索引
+                    correct_in_hyper_probs_index = torch.argmax(probs_lb_hyper, dim=1) == torch.argmax(y_lb, dim=1)
+                else:
+                    probs_lb_fc = torch.sigmoid(logits_x_lb)
+                    probs_lb_hyper = torch.sigmoid(hyper_whole_logits[:num_lb])
+                    probs_ulb_fc = torch.sigmoid(logits_x_ulb_w)
+                    probs_ulb_hyper = torch.sigmoid(hyper_whole_logits[num_lb:])
+                    # 获得本次的probs_lb_fc里面预测正确的样本索引,
+                    correct_in_fc_probs_index = (probs_lb_fc > 0.5).float() == y_lb
+                    # 获得本次probs_lb_hyper里面预测正确的样本索引
+                    correct_in_hyper_probs_index = (probs_lb_hyper > 0.5).float() == y_lb
                 # 获得两次都预测正确的样本索引
                 correct_in_both_probs_index = correct_in_fc_probs_index & correct_in_hyper_probs_index
                 # 获得在fc上预测正确,但是在hyper上预测错误的样本索引
@@ -680,7 +588,7 @@ class HyperPlusFixMatchV3(AlgorithmBase):
                 negative_means = torch.mean(probs_lb_fc[correct_in_fc_wrong_in_hyper_probs_index] - probs_lb_hyper[correct_in_fc_wrong_in_hyper_probs_index], dim=0)
                 # 如果probs_lb_fc或者probs_lb_hyper有nan,则打印:
                 if torch.isnan(positive_means).sum() > 0 or torch.isnan(negative_means).sum() > 0:
-                    print('nan in positive_means or negative_means')
+                    pass
                 else:
                     # 结合global_post_means和global_neg_means进行全局的均值计算
                     if self.global_post_means.sum() != 0:
@@ -693,25 +601,38 @@ class HyperPlusFixMatchV3(AlgorithmBase):
 
                 # 在probs_ulb_fc上加positive_means
                 probs_ulb_fc_add_positive_means = probs_ulb_fc + self.global_post_means
-                # 找出签后两次的概率最大值索引没有变化且概率值大于0.9的样本索引
-                post_correct_in_fc_probs_index = (
-                        (torch.argmax(probs_ulb_fc, dim=1) == torch.argmax(probs_ulb_fc_add_positive_means, dim=1)) &
-                        (torch.max(probs_ulb_fc_add_positive_means, dim=1).values > 0.95)
-                )
-
-                # 在probs_ulb_fc上加negative_means
                 probs_ulb_fc_add_negative_means = probs_ulb_fc + self.global_neg_means
-                # 找出probs_ulb_fc和probs_ulb_fc_add_negative_means前后两次的概率最大值索引发生变化的样本且变化后概率值大于0.9的样本
-                neg_correct_in_fc_probs_index = (
-                        (torch.argmax(probs_ulb_fc, dim=1) != torch.argmax(probs_ulb_fc_add_negative_means, dim=1)) &
-                        (torch.max(probs_ulb_fc_add_negative_means, dim=1).values > 0.95)
-                )
+                # 找出签后两次的概率最大值索引没有变化且概率值大于0.9的样本索引
+                if self.ce_loss == 'ce':
+                    post_correct_in_fc_probs_index = (
+                            (torch.argmax(probs_ulb_fc, dim=1) == torch.argmax(probs_ulb_fc_add_positive_means, dim=1)) &
+                            (torch.max(probs_ulb_fc_add_positive_means, dim=1).values > 0.95)
+                    )
+                    # 在probs_ulb_fc上加negative_means
 
-            mask = self.call_hook("masking", "MaskingHook", logits_x_ulb=probs, softmax_x_ulb=False)
+                    # 找出probs_ulb_fc和probs_ulb_fc_add_negative_means前后两次的概率最大值索引发生变化的样本且变化后概率值大于0.9的样本
+                    neg_correct_in_fc_probs_index = (
+                            (torch.argmax(probs_ulb_fc, dim=1) != torch.argmax(probs_ulb_fc_add_negative_means, dim=1)) &
+                            (torch.max(probs_ulb_fc_add_negative_means, dim=1).values > 0.95)
+                    )
+                else:
+                    post_correct_in_fc_probs_index = (
+                            (probs_ulb_fc > 0.5) == (probs_ulb_fc_add_positive_means > 0.95)
+                    )
+                    neg_correct_in_fc_probs_index = (
+                            (probs_ulb_fc > 0.5) != (probs_ulb_fc_add_negative_means > 0.95)
+                    )
+            multi_label = True if self.args.loss == 'bce' else False
+            mask = self.call_hook("masking", "MaskingHook", logits_x_ulb=probs, softmax_x_ulb=False,multi_label=multi_label)
             # mask的形状是[num_ulb, num_classes],现在需要将其转换为[num_ulb]
-            mask = mask.argmax(dim=1).bool()
+            # if self.args.loss == 'ce':
+            #     mask = mask.argmax(dim=1).bool()
+            # else:
+            mask = mask.int()
             # 逻辑运算mask或post_correct_in_fc_probs_index
             final_mask = (mask | post_correct_in_fc_probs_index) & ~neg_correct_in_fc_probs_index
+            if self.args.loss == 'ce':
+                final_mask = final_mask.argmax(dim=1).bool()
 
             hyper_class_loss = self.consistency_loss(logits_x_ulb_s_0,pred_classes_ulb_w,self.args.loss,final_mask)
 

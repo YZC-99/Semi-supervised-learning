@@ -91,15 +91,12 @@ python oct_ssl.py --algorithm 'hyperplusfixmatchv3' --num_train_iter 5500 --devi
 
 
 
-python oct_ssl.py --algorithm 'hyperplusfixmatchv3' --num_train_iter 5500 --device 0 --num_labels_mode 'ratio' --num_labels_ratio 0.05 \
+python oct_ssl.py --algorithm 'hyperplusfixmatchv3' --num_train_iter 5500 --device 1 --num_labels_mode 'ratio' --num_labels_ratio 0.05 \
 --net 'densenet121' --batch_size 64 --num_classes 7 --dataset 'isic2018' --loss 'ce' --save_dir 'isic2018-exp' \
---all_train_count 7010 --clinical 'localization' --other '双0.95种子实验' \
+--all_train_count 7010 --clinical 'lesion_id' --other 'lb分类头logits分别计算损失-ulb两个hyperkl散度-通过whole建模' \
 --num_eval_iter 150 --overfit --seed 2300 --lr 0.0001
 
 
-python oct_ssl.py --algorithm 'flexmatch' --num_train_iter 5500 --device 1 --num_labels_mode 'ratio' --num_labels_ratio 0.05 \
---net 'densenet121' --batch_size 64 --num_classes 7 --dataset 'isic2018' --loss 'ce' --save_dir 'isic2018-exp' \
---all_train_count 7010  --num_eval_iter 150 --overfit --seed 2300 --lr 0.0001
 
 
 

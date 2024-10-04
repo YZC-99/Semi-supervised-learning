@@ -18,10 +18,10 @@ class EvaluationHook(Hook):
             eval_dict = algorithm.test('eval')
             algorithm.log_dict.update(eval_dict)
 
-            # if algorithm.log_dict['eval/mAP'] > algorithm.best_eval_mAP:
-            #     algorithm.best_eval_mAP = algorithm.log_dict['eval/mAP']
             if algorithm.log_dict['eval/SENS'] > algorithm.best_eval_OF1:
                 algorithm.best_eval_OF1 = algorithm.log_dict['eval/SENS']
+            # if algorithm.log_dict['eval/AUC'] > algorithm.best_eval_OF1:
+            #     algorithm.best_eval_OF1 = algorithm.log_dict['eval/AUC']
                 algorithm.best_it = algorithm.it
                 algorithm.best_epoch = algorithm.epoch
             else:
@@ -31,7 +31,7 @@ class EvaluationHook(Hook):
                 else:
                     algorithm.best_eval_mAP_patience = 0
 
-            if (algorithm.best_eval_mAP_patience > int(algorithm.num_train_iter * 0.2)) and (algorithm.it > int(algorithm.num_train_iter * 0.6)):
+            if (algorithm.best_eval_mAP_patience > int(algorithm.num_train_iter * 0.1)) and (algorithm.it > int(algorithm.num_train_iter * 0.6)):
             # if (algorithm.best_eval_mAP_patience > 30):
                 print('Early stopping at iteration {}'.format(algorithm.it))
                 algorithm.it = 1000000000
@@ -64,42 +64,6 @@ class EvaluationHook(Hook):
                                 'ACC': [test_dict['test/ACC']],
                                 'F1': [test_dict['test/F1']]})
             df.to_csv(save_path, index=False)
-
-            # 模拟计算
-            from compute_by_logits_isic2018 import get_target_names_labels
-            from semilearn.lighting.compute_metircs import compute_metrics
-            import torch
-            import numpy as np
-            target_names, target_labels = get_target_names_labels()
-            # 读取预测的 logits
-            test_logits_path = logits_save_path
-            # pred_logits_df = pd.read_csv(test_logits_path)
-            pred_logits_df = logits_df
-            pred_names = pred_logits_df.iloc[:, 0].values
-            pred_probs = pred_logits_df.iloc[:, 1:].values
-
-            # 去除预测名称中的前缀
-            prefix = "/home/gu721/yzc/data/ISIC2018/images/"
-            pred_names = [name.replace(prefix, '') for name in pred_names]
-            pred_names = [name.replace('.jpg', '') for name in pred_names]
-            # 确保预测和标签的样本顺序一致
-            name_to_index = {name: idx for idx, name in enumerate(target_names)}
-            indices = [name_to_index[name] for name in pred_names]
-            target_labels_ordered = target_labels[indices]
-
-            # 对预测 logits 应用 softmax 并选取最大值作为预测类别
-            pred_probs = torch.softmax(torch.tensor(pred_probs), dim=-1).numpy()  # (N,num_classes)
-            target_labels_ordered = np.argmax(target_labels_ordered, axis=1)  # (N,)
-            result = compute_metrics(target_labels_ordered, pred_probs, num_classes=7)
-            df = pd.DataFrame({'AUC': [result['AUC']],
-                               'SENS': [result['SENS']],
-                               'SPEC': [result['SPEC']],
-                               'ACC': [result['ACC']],
-                               'F1': [result['F1']]})
-            save_path = os.path.join(algorithm.save_dir, algorithm.save_name, 'test_results-v2.csv')
-            df.to_csv(save_path, index=False)
-
-
 
         algorithm.results_dict = results_dict
         

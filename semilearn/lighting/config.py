@@ -34,7 +34,7 @@ def get_config(config):
                         help='cosine linear warmup iterations')
     parser.add_argument('--num_eval_iter', type=int, default=10,
                         help='evaluation frequency')
-    parser.add_argument('--num_log_iter', type=int, default=5,
+    parser.add_argument('--num_log_iter', type=int, default=50,
                         help='logging frequencu')
     parser.add_argument('-nl', '--num_labels', type=int, default=400)
     parser.add_argument('--exterrio',  type=float, default=0.0)

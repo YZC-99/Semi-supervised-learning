@@ -100,7 +100,7 @@ if __name__ == '__main__':
         'momentum': 0.9,
         'seed': args.seed,
         'batch_size': batch_size,
-        'eval_batch_size': 128,
+        'eval_batch_size': 256,
         # dataset configs
         'dataset': args.dataset,
         'num_labels': num_labels,

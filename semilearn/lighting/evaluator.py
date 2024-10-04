@@ -68,8 +68,9 @@ class Evaluator(object):
         }
 
     def compute_multi_label(self, outputs, labels):
-        outputs = torch.cat(outputs, dim=0).float()
-        labels = torch.cat(labels, dim=0).float()
+        outputs = torch.cat(outputs, dim=0).float().cpu()
+        labels = torch.cat(labels, dim=0).float().cpu()
+        THRESH = 0.18
         AUROCs, Accs, Senss, Recas, Specs, F1s = [], [], [], [], [], []
         for i in range(self.num_classes):
             try:
@@ -77,23 +78,23 @@ class Evaluator(object):
             except ValueError:
                 AUROCs.append(0)
             try:
-                Accs.append(accuracy_score(labels[:, i], outputs[:, i] > 0.5))
+                Accs.append(accuracy_score(labels[:, i], outputs[:, i] > THRESH))
             except ValueError:
                 Accs.append(0)
             try:
-                Senss.append(sensitivity_score(labels[:, i], outputs[:, i] > 0.5))
+                Senss.append(sensitivity_score(labels[:, i], outputs[:, i] > THRESH))
             except ValueError:
                 Senss.append(0)
             try:
-                Recas.append(recall_score(labels[:, i], outputs[:, i] > 0.5))
+                Recas.append(recall_score(labels[:, i], outputs[:, i] > THRESH))
             except ValueError:
                 Recas.append(0)
             try:
-                Specs.append(specificity_score(labels[:, i], outputs[:, i] > 0.5))
+                Specs.append(specificity_score(labels[:, i], outputs[:, i] > THRESH))
             except ValueError:
                 Specs.append(0)
             try:
-                F1s.append(f1_score(labels[:, i], outputs[:, i] > 0.5))
+                F1s.append(f1_score(labels[:, i], outputs[:, i] > THRESH))
             except ValueError:
                 F1s.append(0)
         # 计算平均值
