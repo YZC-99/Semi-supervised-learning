@@ -57,6 +57,8 @@ parser.add_argument("--vpt_len", type=int,default=50)
 
 if __name__ == '__main__':
     args = parser.parse_args()
+    if args.autodl:
+        args.save_dir = f'/root/autodl-tmp/{args.save_dir}'
     seed_everything(args.seed)
     algorithm=args.algorithm
     num_train_iter=args.num_train_iter
