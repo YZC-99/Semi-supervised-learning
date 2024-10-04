@@ -18,18 +18,31 @@ class EvaluationHook(Hook):
             eval_dict = algorithm.test('eval')
             algorithm.log_dict.update(eval_dict)
 
-            if algorithm.log_dict['eval/SENS'] > algorithm.best_eval_OF1:
-                algorithm.best_eval_OF1 = algorithm.log_dict['eval/SENS']
-            # if algorithm.log_dict['eval/AUC'] > algorithm.best_eval_OF1:
-            #     algorithm.best_eval_OF1 = algorithm.log_dict['eval/AUC']
-                algorithm.best_it = algorithm.it
-                algorithm.best_epoch = algorithm.epoch
-            else:
-                # algorithm.best_eval_mAP_patience += 1
-                if (algorithm.it > int(algorithm.num_train_iter * 0.6)):
-                    algorithm.best_eval_mAP_patience += 1 * algorithm.num_eval_iter
+
+            if algorithm.num_classes == 7:
+                if algorithm.log_dict['eval/SENS'] > algorithm.best_eval_OF1:
+                    algorithm.best_eval_OF1 = algorithm.log_dict['eval/SENS']
+                    algorithm.best_it = algorithm.it
+                    algorithm.best_epoch = algorithm.epoch
                 else:
-                    algorithm.best_eval_mAP_patience = 0
+                    # algorithm.best_eval_mAP_patience += 1
+                    if (algorithm.it > int(algorithm.num_train_iter * 0.6)):
+                        algorithm.best_eval_mAP_patience += 1 * algorithm.num_eval_iter
+                    else:
+                        algorithm.best_eval_mAP_patience = 0
+            else:
+                if algorithm.log_dict['eval/AUC'] > algorithm.best_eval_OF1:
+                    algorithm.best_eval_OF1 = algorithm.log_dict['eval/AUC']
+                    algorithm.best_it = algorithm.it
+                    algorithm.best_epoch = algorithm.epoch
+                else:
+                    # algorithm.best_eval_mAP_patience += 1
+                    if (algorithm.it > int(algorithm.num_train_iter * 0.6)):
+                        algorithm.best_eval_mAP_patience += 1 * algorithm.num_eval_iter
+                    else:
+                        algorithm.best_eval_mAP_patience = 0
+
+
 
             if (algorithm.best_eval_mAP_patience > int(algorithm.num_train_iter * 0.1)) and (algorithm.it > int(algorithm.num_train_iter * 0.6)):
             # if (algorithm.best_eval_mAP_patience > 30):

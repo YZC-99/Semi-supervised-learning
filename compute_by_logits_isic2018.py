@@ -7,11 +7,19 @@ import os
 import re
 import torch
 from semilearn.lighting.compute_metircs import compute_metrics
+# 自动检测当前文件所在的目录的绝对路径
+ABS_FLAG = True
+if 'gu721' not in os.path.dirname(os.path.abspath(__file__)):
+    ABS_FLAG = False
+
 
 
 def get_target_names_labels():
     # 读取目标标签
+
     target_csv = "/home/gu721/yzc/Semi-supervised-learning/data/ISIC2018/test_dataset.csv"
+    if not ABS_FLAG:
+        target_csv = "/root/Semi-supervised-learning/data/ISIC2018/train_dataset.csv"
     target_all_info = pd.read_csv(target_csv)
     target_all_info = target_all_info.fillna(0)
     target_names = target_all_info.iloc[:, 0].values
@@ -30,6 +38,8 @@ def compute_metrics_single_classes(pred_logits_dir):
 
     # 去除预测名称中的前缀
     prefix = "/home/gu721/yzc/data/ISIC2018/images/"
+    if not ABS_FLAG:
+        prefix = "/root/autodl-tmp/ISIC2018/images/"
     pred_names = [name.replace(prefix, '') for name in pred_names]
     pred_names = [name.replace('.jpg', '') for name in pred_names]
 
@@ -61,6 +71,9 @@ if __name__ == '__main__':
     # exp_root = "/dk1/oct_exp/"
     exp_root = "/dk1/isic2018-exp/"
     save_dir = "/home/gu721/yzc/Semi-supervised-learning/results/"
+    if not ABS_FLAG:
+        exp_root = "/root/autodl-tmp/isic2018-exp/"
+        save_dir = "/root/Semi-supervised-learning/results/"
     save_path = os.path.join(save_dir, 'isic2018-results.csv')
     multi_label=False
 
