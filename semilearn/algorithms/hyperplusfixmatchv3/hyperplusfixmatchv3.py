@@ -627,8 +627,8 @@ class HyperPlusFixMatchV3(AlgorithmBase):
             mask = mask.int() #形状就是batch_size
             # post_correct_in_fc_probs_index和neg_correct_in_fc_probs_index需要返回最大值索引
             if self.args.loss == 'ce':
-                post_correct_in_fc_probs_index = torch.argmax(post_correct_in_fc_probs_index, dim=1)
-                neg_correct_in_fc_probs_index = torch.argmax(neg_correct_in_fc_probs_index, dim=1)
+                post_correct_in_fc_probs_index = torch.argmax(post_correct_in_fc_probs_index.int(), dim=1)
+                neg_correct_in_fc_probs_index = torch.argmax(neg_correct_in_fc_probs_index.int(), dim=1)
             final_mask = (mask | post_correct_in_fc_probs_index) & ~neg_correct_in_fc_probs_index
 
             hyper_class_loss = self.consistency_loss(logits_x_ulb_s_0,pred_classes_ulb_w,self.args.loss,final_mask)
