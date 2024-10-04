@@ -624,15 +624,12 @@ class HyperPlusFixMatchV3(AlgorithmBase):
                     )
             multi_label = True if self.args.loss == 'bce' else False
             mask = self.call_hook("masking", "MaskingHook", logits_x_ulb=probs, softmax_x_ulb=False,multi_label=multi_label)
-            # mask的形状是[num_ulb, num_classes],现在需要将其转换为[num_ulb]
-            # if self.args.loss == 'ce':
-            #     mask = mask.argmax(dim=1).bool()
-            # else:
-            mask = mask.int()
-            # 逻辑运算mask或post_correct_in_fc_probs_index
+            mask = mask.int() #形状就是batch_size
+            # post_correct_in_fc_probs_index和neg_correct_in_fc_probs_index需要返回最大值索引
+            if self.args.loss == 'ce':
+                post_correct_in_fc_probs_index = torch.argmax(post_correct_in_fc_probs_index, dim=1)
+                neg_correct_in_fc_probs_index = torch.argmax(neg_correct_in_fc_probs_index, dim=1)
             final_mask = (mask | post_correct_in_fc_probs_index) & ~neg_correct_in_fc_probs_index
-            # if self.args.loss == 'ce':
-            #     final_mask = final_mask.argmax(dim=1).bool()
 
             hyper_class_loss = self.consistency_loss(logits_x_ulb_s_0,pred_classes_ulb_w,self.args.loss,final_mask)
 
