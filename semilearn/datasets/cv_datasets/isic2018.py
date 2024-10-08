@@ -69,7 +69,7 @@ def get_isic2018(args, alg,num_labels, num_classes,include_lb_to_ulb=False):
     ])
 
     transform_val = transforms.Compose([
-        transforms.Resize(img_size),
+        transforms.Resize((img_size,img_size)),
         transforms.ToTensor(),
         transforms.Normalize(imgnet_mean, imgnet_std)
     ])

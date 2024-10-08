@@ -8,8 +8,9 @@ from semilearn.algorithms.hooks import PseudoLabelingHook, FixedThresholdingHook
 from semilearn.algorithms.utils import SSL_Argument, str2bool
 
 
-@ALGORITHMS.register('hyperplusfixmatchv3')
-class HyperplusFixMatchv3(AlgorithmBase):
+@ALGORITHMS.register('vcfixmatch')
+class VCFixMatch(AlgorithmBase):
+
     """
         FixMatch algorithm (https://arxiv.org/abs/2001.07685).
 
@@ -29,50 +30,23 @@ class HyperplusFixMatchv3(AlgorithmBase):
             - hard_label (`bool`, *optional*, default to `False`):
                 If True, targets have [Batch size] shape with int values. If False, the target is vector
     """
-
     def __init__(self, args, net_builder, tb_log=None, logger=None):
-        super().__init__(args, net_builder, tb_log, logger)
+        super().__init__(args, net_builder, tb_log, logger) 
         # fixmatch specified arguments
         self.init(T=args.T, p_cutoff=args.p_cutoff, hard_label=args.hard_label)
-
+    
     def init(self, T, p_cutoff, hard_label=True):
         self.T = T
         self.p_cutoff = p_cutoff
         self.use_hard_label = hard_label
-        self.build_boundary_inper_probs
-
-    def build_boundary_inper_probs(self):
-        probs_range = [0.7,0.8]
-        self.min_loss_threshold_in_prob_range = 0.0
-        with torch.no_grad():
-            for data in self.loader_dict['train_lb']:
-                x_lb, y_lb = data
-                x_lb = x_lb.to(self.device)
-                y_lb = y_lb.to(self.device)
-                logits = self.model(x_lb)['logits']
-                if self.ce_loss == 'ce':
-                    probs = torch.nn.functional.softmax(logits, dim=1)
-                    criterion = torch.nn.CrossEntropyLoss(reduction='none')
-                    preds = torch.argmax(probs, dim=1)
-                elif self.ce_loss == 'bce':
-                    probs = torch.sigmoid(logits)
-                    criterion = torch.nn.BCEWithLogitsLoss(reduction='none')
-                    preds = (probs > 0.5).float()
-                losses = criterion(logits, y_lb)
-                # 找出probs在probs_range中的最小loss，并赋予min_loss_threshold_in_prob_range
-                for i in range(len(probs)):
-                    if probs_range[0] <= probs[i] <= probs_range[1]:
-                        if losses[i] < self.min_loss_threshold_in_prob_range:
-                            self.min_loss_threshold_in_prob_range = losses[i]
-
+    
     def set_hooks(self):
         self.register_hook(PseudoLabelingHook(), "PseudoLabelingHook")
         self.register_hook(FixedThresholdingHook(), "MaskingHook")
         super().set_hooks()
 
-    def train_step(self, x_lb, y_lb, x_ulb_w, x_ulb_s):
+    def train_step(self, x_lb, y_lb,in_clinical, x_ulb_w, x_ulb_s,ex_clinical):
         num_lb = y_lb.shape[0]
-
         # inference and calculate sup/unsup losses
         with self.amp_cm():
             if self.use_cat:
@@ -83,7 +57,7 @@ class HyperplusFixMatchv3(AlgorithmBase):
                 feats_x_lb = outputs['feat'][:num_lb]
                 feats_x_ulb_w, feats_x_ulb_s = outputs['feat'][num_lb:].chunk(2)
             else:
-                outs_x_lb = self.model(x_lb)
+                outs_x_lb = self.model(x_lb) 
                 logits_x_lb = outs_x_lb['logits']
                 feats_x_lb = outs_x_lb['feat']
                 outs_x_ulb_s = self.model(x_ulb_s)
@@ -93,31 +67,25 @@ class HyperplusFixMatchv3(AlgorithmBase):
                     outs_x_ulb_w = self.model(x_ulb_w)
                     logits_x_ulb_w = outs_x_ulb_w['logits']
                     feats_x_ulb_w = outs_x_ulb_w['feat']
-            feat_dict = {'x_lb': feats_x_lb, 'x_ulb_w': feats_x_ulb_w, 'x_ulb_s': feats_x_ulb_s}
+            feat_dict = {'x_lb':feats_x_lb, 'x_ulb_w':feats_x_ulb_w, 'x_ulb_s':feats_x_ulb_s}
 
             sup_loss = self.ce_loss(logits_x_lb, y_lb, reduction='mean')
-
+            
             # probs_x_ulb_w = torch.softmax(logits_x_ulb_w, dim=-1)
             probs_x_ulb_w = self.compute_prob(logits_x_ulb_w.detach())
-
-            # if distribution alignment hook is registered, call it
+            
+            # if distribution alignment hook is registered, call it 
             # this is implemented for imbalanced algorithm - CReST
             if self.registered_hook("DistAlignHook"):
                 probs_x_ulb_w = self.call_hook("dist_align", "DistAlignHook", probs_x_ulb=probs_x_ulb_w.detach())
 
             multi_label = True if self.args.loss == 'bce' else False
 
-            # mask的计算遵循如下规则
-            # probs大于0.8且
-
-
-
             # compute mask
-            # mask = self.call_hook("masking", "MaskingHook", logits_x_ulb=probs_x_ulb_w, softmax_x_ulb=False,
-            #                       multi_label=multi_label)
+            mask = self.call_hook("masking", "MaskingHook", logits_x_ulb=probs_x_ulb_w, softmax_x_ulb=False,multi_label=multi_label)
 
             # generate unlabeled targets using pseudo label hook
-            pseudo_label = self.call_hook("gen_ulb_targets", "PseudoLabelingHook",
+            pseudo_label = self.call_hook("gen_ulb_targets", "PseudoLabelingHook", 
                                           logits=probs_x_ulb_w,
                                           use_hard_label=self.use_hard_label,
                                           T=self.T,
@@ -132,11 +100,12 @@ class HyperplusFixMatchv3(AlgorithmBase):
             total_loss = sup_loss + self.lambda_u * unsup_loss
 
         out_dict = self.process_out_dict(loss=total_loss, feat=feat_dict)
-        log_dict = self.process_log_dict(sup_loss=sup_loss.item(),
-                                         unsup_loss=unsup_loss.item(),
-                                         total_loss=total_loss.item(),
+        log_dict = self.process_log_dict(sup_loss=sup_loss.item(), 
+                                         unsup_loss=unsup_loss.item(), 
+                                         total_loss=total_loss.item(), 
                                          util_ratio=mask.float().mean().item())
         return out_dict, log_dict
+        
 
     @staticmethod
     def get_argument():

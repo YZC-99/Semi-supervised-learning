@@ -80,8 +80,12 @@ if __name__ == '__main__':
         save_name = f'{args.net}_{other}/{algorithm}_nlratio{args.num_labels_ratio}_{args.finetune_mode}_{optim}_lr{lr}_num_train_iter{num_train_iter}_bs{batch_size}_seed{args.seed}'
     else:
         save_name = f'{args.net}_{args.clinical}/{algorithm}_{other}_{args.finetune_mode}_{args.num_labels_mode}_{optim}_extr{exterrio}_uratio{uratio}_nlratio{args.num_labels_ratio}_lr{lr}_num_train_iter{num_train_iter}_bs{batch_size}_seed{args.seed}'
-    num_labels = int(args.all_train_count * args.num_labels_ratio)
-    ulb_num_labels = args.all_train_count - num_labels
+    if args.num_labels_mode == 'ratio':
+        num_labels = int(args.all_train_count * args.num_labels_ratio)
+        ulb_num_labels = args.all_train_count - num_labels
+    else:
+        num_labels = int(args.num_labels_mode.split('N')[-1])
+        ulb_num_labels = args.all_train_count - num_labels
     config = {
         'algorithm': algorithm,
         'save_name': save_name,

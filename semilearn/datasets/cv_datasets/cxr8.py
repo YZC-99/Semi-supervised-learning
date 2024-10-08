@@ -40,10 +40,10 @@ def get_cxr8(args, alg,num_labels, num_classes,include_lb_to_ulb=False):
     data = [data_dir + i for i in data]
     targets = train_all_info.iloc[:, 1:label_end].values
 
-    # mean = [0, 0, 0]
-    # std = [1, 1, 1]
-    imgnet_mean = (0.485, 0.456, 0.406)
-    imgnet_std = (0.229, 0.224, 0.225)
+    imgnet_mean = [0, 0, 0]
+    imgnet_std = [1, 1, 1]
+    # imgnet_mean = (0.485, 0.456, 0.406)
+    # imgnet_std = (0.229, 0.224, 0.225)
     img_size = args.img_size
     crop_ratio = args.crop_ratio
     transform_weak = transforms.Compose([
@@ -69,12 +69,12 @@ def get_cxr8(args, alg,num_labels, num_classes,include_lb_to_ulb=False):
         transforms.Normalize(imgnet_mean, imgnet_std)
     ])
     # 简单粗暴的方法，直接取数据的前一部分作为有标签数据，后一部分作为无标签数据
-    # lb_data, lb_targets, ulb_data, ulb_targets = data[:num_labels], targets[:num_labels], data[num_labels:], targets[num_labels:]
-    lb_data, lb_targets, ulb_data, ulb_targets = split_ssl_multilabel_data_full(args, data, targets, num_classes,
-                                                                lb_num_labels=num_labels,
-                                                                ulb_num_labels=args.ulb_num_labels,
-                                                                include_lb_to_ulb=include_lb_to_ulb,
-                                                                           load_exist=False)
+    lb_data, lb_targets, ulb_data, ulb_targets = data[:num_labels], targets[:num_labels], data[num_labels:], targets[num_labels:]
+    # lb_data, lb_targets, ulb_data, ulb_targets = split_ssl_multilabel_data_full(args, data, targets, num_classes,
+    #                                                             lb_num_labels=num_labels,
+    #                                                             ulb_num_labels=args.ulb_num_labels,
+    #                                                             include_lb_to_ulb=include_lb_to_ulb,
+    #                                                                        load_exist=False)
     # lb_data, lb_targets, ulb_data, ulb_targets = split_ssl_multilabel_data(args, data, targets, num_classes,
     #                                                             lb_num_labels=num_labels,
     #                                                             ulb_num_labels=args.ulb_num_labels,

@@ -129,7 +129,7 @@ def get_olives(args, alg,num_labels, num_classes,include_lb_to_ulb=False):
     val_data = val_all_info.iloc[:, 0].values
     val_data = [data_dir + i for i in val_data]
     val_targets = val_all_info.iloc[:, 2:args.num_classes + 2].values
-    eval_dset = OLIVESDataset(alg, val_data, val_targets, num_classes, transform_val, False, None, False)
+    eval_dset = OLIVESDataset(alg, val_data, val_targets, num_classes, transform_val, False, None, False,is_test=True)
 
     test_all_info = pd.read_csv(f"{csv_dir}test_dataset.csv")
     # test_all_info = pd.read_csv(f"{csv_dir}train_dataset.csv")

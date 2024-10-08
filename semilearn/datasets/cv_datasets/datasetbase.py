@@ -32,6 +32,7 @@ class BasicDataset(Dataset):
                  onehot=False,
                  is_test=False,
                  clinical=None,
+                 test_transform=None,
                  *args,
                  **kwargs):
         """
@@ -56,6 +57,7 @@ class BasicDataset(Dataset):
         self.transform = transform
         self.strong_transform = strong_transform
         self.medium_transform = medium_transform
+        self.test_transform = test_transform
         if self.strong_transform is None:
             if self.is_ulb:
                 assert self.alg not in ['fullysupervised', 'supervised', 'pseudolabel', 'vat', 'pimodel', 'meanteacher', 'mixmatch', 'refixmatch'], f"alg {self.alg} requires strong augmentation"
@@ -131,8 +133,10 @@ class BasicDataset(Dataset):
             return weak_augment_image, strong_augment_image, target
         """
         img, target,path = self.__sample__(idx)
-
-        return  {'idx_lb': idx, 'image_path':path, 'x_lb':  self.transform(img), 'y_lb': target}
+        if self.test_transform is None:
+            return  {'idx_lb': idx, 'image_path':path, 'x_lb':  self.transform(img), 'y_lb': target}
+        else:
+            return {'idx_lb': idx, 'image_path':path, 'x_lb': self.transform(img), 'y_lb': target, 'x_lb_s': self.test_transform(img)}
 
 
     def getitem_train_clinical(self, idx):

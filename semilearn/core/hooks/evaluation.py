@@ -37,14 +37,14 @@ class EvaluationHook(Hook):
                     algorithm.best_epoch = algorithm.epoch
                 else:
                     # algorithm.best_eval_mAP_patience += 1
-                    if (algorithm.it > int(algorithm.num_train_iter * 0.6)):
+                    if (algorithm.it > int(algorithm.num_train_iter * 0.5)):
                         algorithm.best_eval_mAP_patience += 1 * algorithm.num_eval_iter
                     else:
                         algorithm.best_eval_mAP_patience = 0
 
 
 
-            if (algorithm.best_eval_mAP_patience > int(algorithm.num_train_iter * 0.1)) and (algorithm.it > int(algorithm.num_train_iter * 0.6)):
+            if (algorithm.best_eval_mAP_patience > int(algorithm.num_train_iter * 0.1)) and (algorithm.it > int(algorithm.num_train_iter * 0.5)):
             # if (algorithm.best_eval_mAP_patience > 30):
                 print('Early stopping at iteration {}'.format(algorithm.it))
                 algorithm.it = 1000000000

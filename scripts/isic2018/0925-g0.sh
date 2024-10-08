@@ -97,6 +97,11 @@ python oct_ssl.py --algorithm 'hyperplusfixmatchv3' --num_train_iter 5500 --devi
 --num_eval_iter 150 --overfit --seed 2300 --lr 0.0001
 
 
+python oct_ssl.py --algorithm 'fixmatch' --num_train_iter 5500 --device 1 --num_labels_mode 'ratio' --num_labels_ratio 0.05 \
+--net 'vit_large_patch16_224' --batch_size 10 --num_classes 7 --dataset 'isic2018' --loss 'ce' --save_dir 'isic2018-exp' \
+--all_train_count 7010 --num_eval_iter 1 --seed 2300 --lr 0.0001 --autodl
+
+
 
 
 
